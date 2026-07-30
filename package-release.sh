@@ -17,5 +17,9 @@ fi
 mkdir -p "$release_dir"
 rm -f "$archive" "$archive.sha256"
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$archive"
-shasum -a 256 "$archive" > "$archive.sha256"
+(
+  cd "$release_dir"
+  archive_name="$(basename "$archive")"
+  shasum -a 256 "$archive_name" > "$archive_name.sha256"
+)
 echo "$archive"
