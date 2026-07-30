@@ -10,6 +10,7 @@ from voice_input import (
     paste_result_to_context,
     prefer_external_input_context,
     right_option_transition,
+    start_optional_escape_monitor,
     status_with_icon,
 )
 
@@ -46,6 +47,15 @@ class HotkeyTests(unittest.TestCase):
     def test_status_icon_is_not_duplicated(self):
         self.assertEqual(status_with_icon("已完成", "✅"), "✅ 已完成")
         self.assertEqual(status_with_icon("✅ 已完成", "✅"), "✅ 已完成")
+
+    def test_missing_accessibility_does_not_abort_startup(self):
+        def unavailable():
+            raise RuntimeError("permission missing")
+
+        self.assertFalse(start_optional_escape_monitor(unavailable))
+
+    def test_available_escape_monitor_reports_ready(self):
+        self.assertTrue(start_optional_escape_monitor(lambda: None))
 
 
 class ContextTests(unittest.TestCase):

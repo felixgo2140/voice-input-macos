@@ -600,6 +600,19 @@ def right_option_transition(
     return False, option_down
 
 
+def start_optional_escape_monitor(start_callback) -> bool:
+    """Keep the app alive while Accessibility permission is unavailable."""
+    try:
+        start_callback()
+        return True
+    except RuntimeError as error:
+        print(
+            f"[启动] Esc 拦截暂不可用：{error}；授权辅助功能后请重启应用",
+            flush=True,
+        )
+        return False
+
+
 class RecoveringRecorder(Recorder):
     """Retry CoreAudio with the current device rate after hardware changes."""
 
@@ -1425,8 +1438,12 @@ class MacOSRightOptionListener:
         if any(monitor is None for monitor in self.monitors):
             self.stop()
             raise RuntimeError("无法创建 macOS 全局按键监听")
-        self._start_key_event_tap()
-        print("[启动] macOS 原生右 Option/Esc 监听已就绪", flush=True)
+        escape_ready = start_optional_escape_monitor(self._start_key_event_tap)
+        print(
+            "[启动] macOS 原生右 Option 已就绪，Esc "
+            + ("已就绪" if escape_ready else "等待辅助功能授权"),
+            flush=True,
+        )
 
     def _start_key_event_tap(self) -> None:
         from Quartz import (
@@ -1658,8 +1675,10 @@ def main() -> int:
 
     app_class = make_app()
     app = app_class(runtime_config)
-    if missing or not bool(
-        config.get("onboarding", {}).get("completed", False)
+    if (
+        missing
+        or not bool(config.get("onboarding", {}).get("completed", False))
+        or not accessibility_is_trusted()
     ):
         app.schedule_settings()
     hotkey = str(runtime_config.get("hotkey", "<alt_r>"))

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1 — 2026-07-29
+
+- Keeps the application running when macOS Accessibility permission needs to
+  be granted again after an update.
+- Shows the settings/permission guidance instead of entering a LaunchAgent
+  restart loop.
+
 ## 1.3.0 — 2026-07-29
 
 First public release.
