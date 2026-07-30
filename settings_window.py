@@ -4,13 +4,88 @@ from __future__ import annotations
 
 import threading
 from copy import deepcopy
-from urllib.parse import urlparse
 
 from macos_context import accessibility_is_trusted
 from voice_input_core import configured_api_key
 
 
 _ACTION_CLASS = None
+
+SERVICE_CATALOG = {
+    "asr": (
+        {
+            "provider": "智谱 GLM-ASR",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "models": ("glm-asr-2512",),
+        },
+        {
+            "provider": "Groq Whisper",
+            "base_url": "https://api.groq.com/openai/v1",
+            "models": ("whisper-large-v3-turbo", "whisper-large-v3"),
+        },
+        {
+            "provider": "OpenAI",
+            "base_url": "https://api.openai.com/v1",
+            "models": (
+                "gpt-4o-mini-transcribe",
+                "gpt-4o-transcribe",
+                "whisper-1",
+            ),
+        },
+    ),
+    "llm": (
+        {
+            "provider": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "models": (
+                "deepseek-v4-flash",
+                "deepseek-v4-pro",
+                "deepseek-chat",
+                "deepseek-reasoner",
+            ),
+        },
+        {
+            "provider": "OpenAI",
+            "base_url": "https://api.openai.com/v1",
+            "models": ("gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"),
+        },
+        {
+            "provider": "Groq",
+            "base_url": "https://api.groq.com/openai/v1",
+            "models": (
+                "llama-3.3-70b-versatile",
+                "openai/gpt-oss-20b",
+                "openai/gpt-oss-120b",
+            ),
+        },
+    ),
+}
+
+
+def service_choices(section_name: str, current: dict | None = None) -> tuple:
+    """Return dropdown choices while preserving a legacy saved selection."""
+    if section_name not in SERVICE_CATALOG:
+        raise ValueError(f"未知模型类型：{section_name}")
+
+    choices = [deepcopy(item) for item in SERVICE_CATALOG[section_name]]
+    current = current or {}
+    provider = str(current.get("provider", "") or "").strip()
+    base_url = str(current.get("base_url", "") or "").strip().rstrip("/")
+    model = str(current.get("model", "") or "").strip()
+    selected = next(
+        (item for item in choices if item["provider"] == provider),
+        None,
+    )
+    if provider and selected is None:
+        selected = {
+            "provider": provider,
+            "base_url": base_url,
+            "models": (model,) if model else (),
+        }
+        choices.append(selected)
+    elif selected is not None and model and model not in selected["models"]:
+        selected["models"] = (model, *selected["models"])
+    return tuple(choices)
 
 
 def _action_class():
@@ -33,6 +108,14 @@ def _action_class():
         @objc.IBAction
         def testLLM_(self, _sender):
             self.controller.test_connection("llm")
+
+        @objc.IBAction
+        def asrProviderChanged_(self, _sender):
+            self.controller.provider_changed("asr")
+
+        @objc.IBAction
+        def llmProviderChanged_(self, _sender):
+            self.controller.provider_changed("llm")
 
         @objc.IBAction
         def openAccessibility_(self, _sender):
@@ -80,6 +163,7 @@ class SettingsController:
         self.on_saved = on_saved
         self.window = None
         self.controls: dict[str, object] = {}
+        self.service_options: dict[str, dict[str, dict]] = {}
         self.action_target = None
         self.status_label = None
 
@@ -159,6 +243,17 @@ class SettingsController:
             self.controls[key] = view
             return view
 
+        def popup(key, x, y, w, action=None):
+            view = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                NSMakeRect(x, y, w, 28), False
+            )
+            if action is not None:
+                view.setTarget_(self.action_target)
+                view.setAction_(action)
+            content.addSubview_(view)
+            self.controls[key] = view
+            return view
+
         def button(title, action, x, y, w):
             view = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, 28))
             view.setTitle_(title)
@@ -181,21 +276,33 @@ class SettingsController:
 
         label(20, 532, 580, "模型连接", bold=True)
         label(20, 505, 90, "语音识别")
-        field("asr_provider", 110, 503, 130)
-        field("asr_base_url", 250, 503, 250)
+        popup("asr_provider", 110, 501, 160, "asrProviderChanged:")
+        self.controls["asr_endpoint"] = label(
+            280,
+            505,
+            220,
+            "",
+            color=NSColor.secondaryLabelColor(),
+        )
         button("测试", "testASR:", 510, 501, 88)
         label(20, 474, 90, "ASR 模型")
-        field("asr_model", 110, 472, 190)
+        popup("asr_model", 110, 470, 190)
         label(310, 474, 60, "API Key")
         asr_key = field("asr_key", 370, 472, 228, secure=True)
         asr_key.setPlaceholderString_("留空表示保留现有凭据")
 
         label(20, 431, 90, "文字整理")
-        field("llm_provider", 110, 429, 130)
-        field("llm_base_url", 250, 429, 250)
+        popup("llm_provider", 110, 427, 160, "llmProviderChanged:")
+        self.controls["llm_endpoint"] = label(
+            280,
+            431,
+            220,
+            "",
+            color=NSColor.secondaryLabelColor(),
+        )
         button("测试", "testLLM:", 510, 427, 88)
         label(20, 400, 90, "LLM 模型")
-        field("llm_model", 110, 398, 190)
+        popup("llm_model", 110, 396, 190)
         label(310, 400, 60, "API Key")
         llm_key = field("llm_key", 370, 398, 228, secure=True)
         llm_key.setPlaceholderString_("留空表示保留现有凭据")
@@ -253,13 +360,9 @@ class SettingsController:
         llm = config.get("llm", {})
         ui = config.get("ui", {})
         preview = config.get("realtime_preview", {})
+        self._reload_service("asr", asr)
+        self._reload_service("llm", llm)
         for key, value in (
-            ("asr_provider", asr.get("provider", "")),
-            ("asr_base_url", asr.get("base_url", "")),
-            ("asr_model", asr.get("model", "")),
-            ("llm_provider", llm.get("provider", "")),
-            ("llm_base_url", llm.get("base_url", "")),
-            ("llm_model", llm.get("model", "")),
             ("panel_width", ui.get("panel_width", 340)),
             ("panel_height", ui.get("panel_height", 170)),
             ("caret_gap", ui.get("caret_gap", 52)),
@@ -290,6 +393,54 @@ class SettingsController:
     def _field(self, name: str) -> str:
         return str(self.controls[name].stringValue()).strip()
 
+    def _selected(self, name: str) -> str:
+        selected = self.controls[name].titleOfSelectedItem()
+        return str(selected or "").strip()
+
+    def _reload_service(self, section_name: str, current: dict) -> None:
+        choices = service_choices(section_name, current)
+        self.service_options[section_name] = {
+            item["provider"]: item for item in choices
+        }
+        provider_control = self.controls[f"{section_name}_provider"]
+        provider_control.removeAllItems()
+        provider_control.addItemsWithTitles_(
+            [item["provider"] for item in choices]
+        )
+        current_provider = str(current.get("provider", "") or "").strip()
+        if current_provider in self.service_options[section_name]:
+            provider_control.selectItemWithTitle_(current_provider)
+        else:
+            provider_control.selectItemAtIndex_(0)
+        self._refresh_service(
+            section_name,
+            selected_model=str(current.get("model", "") or "").strip(),
+        )
+
+    def _refresh_service(
+        self,
+        section_name: str,
+        *,
+        selected_model: str = "",
+    ) -> None:
+        provider = self._selected(f"{section_name}_provider")
+        selection = self.service_options[section_name][provider]
+        models = list(selection["models"])
+        model_control = self.controls[f"{section_name}_model"]
+        model_control.removeAllItems()
+        model_control.addItemsWithTitles_(models)
+        if selected_model in models:
+            model_control.selectItemWithTitle_(selected_model)
+        elif models:
+            model_control.selectItemAtIndex_(0)
+        endpoint = str(selection["base_url"]).removeprefix("https://")
+        self.controls[f"{section_name}_endpoint"].setStringValue_(
+            f"地址：{endpoint}"
+        )
+
+    def provider_changed(self, section_name: str) -> None:
+        self._refresh_service(section_name)
+
     @staticmethod
     def _number(value: str, name: str, minimum: float) -> float:
         try:
@@ -301,26 +452,23 @@ class SettingsController:
         return number
 
     def _settings_patch(self) -> dict:
-        asr_url = self._field("asr_base_url")
-        llm_url = self._field("llm_base_url")
-        for name, value in (("ASR 地址", asr_url), ("LLM 地址", llm_url)):
-            parsed = urlparse(value)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                raise ValueError(f"{name}不是有效的 HTTP(S) 地址")
+        selected_services = {}
+        for section_name in ("asr", "llm"):
+            provider = self._selected(f"{section_name}_provider")
+            model = self._selected(f"{section_name}_model")
+            selection = self.service_options[section_name].get(provider)
+            if selection is None or not model:
+                raise ValueError("请选择服务商和模型")
+            selected_services[section_name] = {
+                "provider": provider,
+                "base_url": str(selection["base_url"]).rstrip("/"),
+                "model": model,
+                "api_key": "",
+            }
         mode_index = int(self.controls["output_mode"].indexOfSelectedItem())
         return {
-            "asr": {
-                "provider": self._field("asr_provider") or "OpenAI 兼容",
-                "base_url": asr_url.rstrip("/"),
-                "model": self._field("asr_model"),
-                "api_key": "",
-            },
-            "llm": {
-                "provider": self._field("llm_provider") or "OpenAI 兼容",
-                "base_url": llm_url.rstrip("/"),
-                "model": self._field("llm_model"),
-                "api_key": "",
-            },
+            "asr": selected_services["asr"],
+            "llm": selected_services["llm"],
             "output": {"mode": self.OUTPUT_MODES[mode_index]},
             "auto_paste": bool(self.controls["auto_paste"].state()),
             "restore_clipboard": bool(

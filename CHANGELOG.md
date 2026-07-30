@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.3 — 2026-07-29
+
+- Replaces free-text ASR and LLM provider/model fields with linked dropdowns.
+- Automatically configures the service endpoint for the selected provider.
+- Preserves existing custom provider/model values as selectable legacy options.
+
 ## 1.3.2 — 2026-07-29
 
 - Removes macOS Keychain access so updates never request the user's login

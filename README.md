@@ -11,7 +11,7 @@
 
 ## 功能
 
-- OpenAI 兼容的 ASR 与 LLM 接口，可自由填写服务地址和模型
+- ASR 与 LLM 服务商、模型使用联动下拉选择，服务地址自动配置
 - 中文、English 或根据当前网页/输入框自动判断
 - 录音期间显示转写与整理预览
 - 完成后自动回贴，不依赖浮窗是否处于 active 状态
@@ -39,7 +39,7 @@
 
 1. 从 [Releases](../../releases) 下载 Apple Silicon 版 ZIP。
 2. 解压后把 `Voice Input.app` 拖到“应用程序”。
-3. 首次打开后填写模型服务、模型名和 API Key。
+3. 首次打开后选择模型服务和模型，并填写 API Key。
 4. 按设置窗口提示授予“麦克风”和“辅助功能”权限。
 
 当前公开构建使用 ad-hoc 签名，尚未经过 Apple 公证。首次启动若被 Gatekeeper 拦截，请在 Finder 中右键应用并选择“打开”。不要从不可信来源下载重新打包的版本。
@@ -59,7 +59,7 @@ cd voice-input-macos
 
 ```bash
 ./build-app.sh
-./package-release.sh 1.3.2
+./package-release.sh 1.3.3
 ```
 
 如果拥有 Apple Developer ID：
