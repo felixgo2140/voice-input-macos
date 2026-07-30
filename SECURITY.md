@@ -10,6 +10,11 @@ Please open a private GitHub security advisory for this repository. Do not inclu
 
 ## Credential handling
 
-The application stores API keys in macOS Keychain under the service `com.felix.voiceinput`. Plaintext keys from older local configurations are migrated to Keychain on startup and removed from the JSON file only after the Keychain write succeeds.
+The application stores API keys in
+`~/Library/Application Support/VoiceInput/credentials.json` with owner-only
+`0600` permissions. Plaintext keys from older local configurations are moved
+to that file on startup and removed from the ordinary configuration only after
+the private credential write succeeds. This design deliberately avoids macOS
+login-password prompts when an ad-hoc signed build is updated.
 
 Repository releases never include a user configuration or API credentials.

@@ -17,7 +17,7 @@
 - 完成后自动回贴，不依赖浮窗是否处于 active 状态
 - 浮窗跟随光标，并兼容多显示器坐标
 - 音频设备切换后自动刷新并尝试设备默认采样率
-- API Key 保存在 macOS Keychain，不写入仓库或普通配置文件
+- API Key 保存在仅当前 macOS 用户可读的私有凭据文件中
 - 首次启动提供模型、行为和系统权限设置界面
 
 ## 系统要求
@@ -59,7 +59,7 @@ cd voice-input-macos
 
 ```bash
 ./build-app.sh
-./package-release.sh 1.3.1
+./package-release.sh 1.3.2
 ```
 
 如果拥有 Apple Developer ID：
@@ -73,14 +73,16 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build-app.sh
 ## 配置与数据
 
 - 普通配置：`~/Library/Application Support/VoiceInput/config.json`
-- API Key：macOS Keychain，service 为 `com.felix.voiceinput`
+- API Key：`~/Library/Application Support/VoiceInput/credentials.json`
+  （权限 `600`，仅当前 macOS 用户可读）
 - 日志：由启动方式决定；应用不会主动记录输入框上下文
 
-环境变量优先级高于 Keychain：
+环境变量优先级高于本地凭据文件：
 
 - `VOICE_INPUT_ASR_API_KEY`
 - `VOICE_INPUT_LLM_API_KEY`
 - `VOICE_INPUT_CONFIG_PATH`
+- `VOICE_INPUT_CREDENTIALS_PATH`
 
 高级用户可参考 [`config.example.json`](config.example.json)。不要提交自己的 `config.json`。
 
@@ -94,7 +96,7 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build-app.sh
 python3 -m unittest discover -s tests -v
 python3 -m py_compile \
   voice_input.py voice_input_core.py macos_context.py \
-  keychain_store.py settings_window.py setup_app.py
+  credential_store.py settings_window.py setup_app.py
 ```
 
 ## License

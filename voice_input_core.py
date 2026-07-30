@@ -94,7 +94,7 @@ def deep_update(target: MutableMapping, patch: Mapping) -> None:
 
 
 class ConfigStore:
-    """Load and atomically update JSON configuration and Keychain secrets."""
+    """Load configuration and keep credentials in a private local file."""
 
     def __init__(self, path: Path | str, secret_store=None):
         self.path = Path(path)
@@ -104,7 +104,7 @@ class ConfigStore:
     @property
     def secret_store(self):
         if self._secret_store is None:
-            from keychain_store import get_secret_store
+            from credential_store import get_secret_store
 
             self._secret_store = get_secret_store()
         return self._secret_store
@@ -144,7 +144,7 @@ class ConfigStore:
     ) -> dict:
         """Save non-secret settings and optional credentials atomically enough.
 
-        Keychain writes happen first. The JSON file never receives the secret.
+        Credential writes happen first. The config file never receives the secret.
         Blank secret fields mean "keep the existing credential".
         """
         with self._lock:
@@ -185,7 +185,7 @@ class ConfigStore:
             try:
                 self.secret_store.set(account, legacy)
             except Exception:
-                # Preserve the old credential if Keychain is unavailable.
+                # Preserve the old credential if private storage is unavailable.
                 continue
             section["api_key"] = ""
             changed = True
@@ -380,7 +380,7 @@ def configured_api_key(section: Mapping) -> str:
     account = str(section.get("keychain_account", "") or "").strip()
     if account:
         try:
-            from keychain_store import get_secret_store
+            from credential_store import get_secret_store
 
             value = get_secret_store().get(account).strip()
             if value:

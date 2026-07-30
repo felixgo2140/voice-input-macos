@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 — 2026-07-29
+
+- Removes macOS Keychain access so updates never request the user's login
+  password.
+- Stores API credentials in an owner-only local file with `0600` permissions.
+
 ## 1.3.1 — 2026-07-29
 
 - Keeps the application running when macOS Accessibility permission needs to

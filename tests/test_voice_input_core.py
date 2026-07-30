@@ -66,7 +66,7 @@ class ConfigTests(unittest.TestCase):
         stored = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(stored["output"]["mode"], "中文")
 
-    def test_migrates_plaintext_key_to_keychain(self):
+    def test_migrates_plaintext_key_to_private_store(self):
         legacy_secret = "legacy-" + "secret"
         self.path.write_text(
             json.dumps(
@@ -96,7 +96,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(self.secrets.values["asr-api-key"], "new-secret")
         self.assertNotIn("new-secret", self.path.read_text(encoding="utf-8"))
 
-    def test_blank_secret_keeps_existing_keychain_value(self):
+    def test_blank_secret_keeps_existing_credential(self):
         self.secrets.values["llm-api-key"] = "existing"
         self.store.save_credentials({}, llm_secret=None)
         self.assertEqual(self.secrets.values["llm-api-key"], "existing")

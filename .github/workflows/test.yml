@@ -17,6 +17,6 @@ jobs:
       - name: Compile
         run: >-
           python -m py_compile voice_input.py voice_input_core.py
-          macos_context.py keychain_store.py settings_window.py setup_app.py
+          macos_context.py credential_store.py settings_window.py setup_app.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v

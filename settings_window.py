@@ -188,7 +188,7 @@ class SettingsController:
         field("asr_model", 110, 472, 190)
         label(310, 474, 60, "API Key")
         asr_key = field("asr_key", 370, 472, 228, secure=True)
-        asr_key.setPlaceholderString_("留空表示保留 Keychain 中的值")
+        asr_key.setPlaceholderString_("留空表示保留现有凭据")
 
         label(20, 431, 90, "文字整理")
         field("llm_provider", 110, 429, 130)
@@ -198,7 +198,7 @@ class SettingsController:
         field("llm_model", 110, 398, 190)
         label(310, 400, 60, "API Key")
         llm_key = field("llm_key", 370, 398, 228, secure=True)
-        llm_key.setPlaceholderString_("留空表示保留 Keychain 中的值")
+        llm_key.setPlaceholderString_("留空表示保留现有凭据")
 
         label(20, 352, 580, "输入行为", bold=True)
         label(20, 321, 90, "输出语言")
@@ -242,7 +242,7 @@ class SettingsController:
             20,
             76,
             560,
-            "API Key 只保存在 macOS Keychain，不写入配置文件。",
+            "API Key 保存在当前用户的私有凭据文件中（权限 600）。",
             color=NSColor.secondaryLabelColor(),
         )
         button("保存设置", "save:", 480, 30, 118)
