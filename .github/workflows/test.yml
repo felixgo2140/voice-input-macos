@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install pyobjc-framework-Cocoa pyobjc-framework-Quartz pyobjc-framework-ApplicationServices
+      - name: Compile
+        run: >-
+          python -m py_compile voice_input.py voice_input_core.py
+          macos_context.py keychain_store.py settings_window.py setup_app.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v

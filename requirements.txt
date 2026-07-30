@@ -1,0 +1,13 @@
+rumps>=0.4.0,<1
+pynput>=1.7.7,<2
+sounddevice>=0.5.0,<1
+soundfile>=0.12.1,<1
+numpy>=2.0,<3
+openai>=1.50,<3
+pyperclip>=1.9,<2
+certifi>=2025.1.31
+pyobjc-framework-Cocoa>=10.3,<13
+pyobjc-framework-Quartz>=10.3,<13
+pyobjc-framework-ApplicationServices>=10.3,<13
+pyobjc-framework-AVFoundation>=10.3,<13
+pyobjc-framework-Security>=10.3,<13
