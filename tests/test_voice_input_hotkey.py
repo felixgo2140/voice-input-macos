@@ -3,11 +3,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy
+
 from macos_context import InputContext
 from voice_input import (
     ESCAPE_KEY_CODE,
     RETURN_KEY_CODES,
     RIGHT_OPTION_KEY_CODE,
+    concise_error_message,
     is_plain_enter_event,
     paste_result_to_context,
     prefer_external_input_context,
@@ -51,6 +54,14 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(status_with_icon("已完成", "✅"), "✅ 已完成")
         self.assertEqual(status_with_icon("✅ 已完成", "✅"), "✅ 已完成")
 
+    def test_native_audio_errors_are_concise(self):
+        self.assertEqual(
+            concise_error_message(
+                OSError("cannot load _soundfile_data/libsndfile_arm64.dylib")
+            ),
+            "音频编码组件加载失败，请更新应用",
+        )
+
     def test_missing_accessibility_does_not_abort_startup(self):
         def unavailable():
             raise RuntimeError("permission missing")
@@ -81,8 +92,18 @@ class HotkeyTests(unittest.TestCase):
             },
             InputStream=lambda **_kwargs: Stream(),
         )
+        fake_soundfile = SimpleNamespace(
+            write=lambda *_args, **_kwargs: None,
+            read=lambda *_args, **_kwargs: ([0.0] * 320, 16_000),
+        )
         with (
-            patch.dict(sys.modules, {"sounddevice": fake_sounddevice}),
+            patch.dict(
+                sys.modules,
+                {
+                    "sounddevice": fake_sounddevice,
+                    "soundfile": fake_soundfile,
+                },
+            ),
             patch("voice_input.time.sleep"),
         ):
             self.assertEqual(run_audio_smoke_test(open_stream=True), 0)
@@ -94,7 +115,14 @@ class HotkeyTests(unittest.TestCase):
                 OSError("missing PortAudio")
             )
         )
-        with patch.dict(sys.modules, {"sounddevice": fake_sounddevice}):
+        fake_soundfile = SimpleNamespace()
+        with patch.dict(
+            sys.modules,
+            {
+                "sounddevice": fake_sounddevice,
+                "soundfile": fake_soundfile,
+            },
+        ):
             self.assertEqual(run_audio_smoke_test(), 1)
 
 

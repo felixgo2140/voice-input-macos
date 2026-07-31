@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.5 — 2026-07-30
+
+- Keeps soundfile's bundled libsndfile dynamic library outside the Python ZIP
+  so recorded audio can be written and processed.
+- Extends the packaged-app smoke test to write and read a WAV file in addition
+  to opening a real microphone input stream.
+- Shows concise guidance when a native audio component cannot load.
+
 ## 1.3.4 — 2026-07-30
 
 - Keeps sounddevice's bundled PortAudio dynamic library outside the Python ZIP

@@ -13,6 +13,7 @@ OPTIONS = {
         "sounddevice",
         "_sounddevice_data",
         "soundfile",
+        "_soundfile_data",
         "numpy",
         "openai",
         "pyperclip",
@@ -33,8 +34,8 @@ OPTIONS = {
     "plist": {
         "CFBundleDisplayName": "Voice Input",
         "CFBundleIdentifier": "com.felix.voiceinput",
-        "CFBundleShortVersionString": "1.3.4",
-        "CFBundleVersion": "1304",
+        "CFBundleShortVersionString": "1.3.5",
+        "CFBundleVersion": "1305",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "LSArchitecturePriority": ["arm64"],
@@ -48,7 +49,7 @@ OPTIONS = {
 
 setup(
     name="Voice Input",
-    version="1.3.4",
+    version="1.3.5",
     app=APP,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],

@@ -38,5 +38,10 @@ if [[ ! -f "$portaudio_path" ]]; then
   echo "Missing uncompressed PortAudio library: $portaudio_path" >&2
   exit 1
 fi
+sndfile_path="$app_path/Contents/Resources/lib/python3.12/_soundfile_data/libsndfile_arm64.dylib"
+if [[ ! -f "$sndfile_path" ]]; then
+  echo "Missing uncompressed libsndfile library: $sndfile_path" >&2
+  exit 1
+fi
 "$app_path/Contents/MacOS/Voice Input" --audio-smoke-test
 echo "$app_path"

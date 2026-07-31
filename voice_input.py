@@ -64,6 +64,16 @@ def status_with_icon(status: str, icon: str) -> str:
     return f"{icon} {status}"
 
 
+def concise_error_message(error: Exception) -> str:
+    message = str(error).strip() or error.__class__.__name__
+    lowered = message.lower()
+    if "libsndfile" in lowered or "_soundfile_data" in lowered:
+        return "音频编码组件加载失败，请更新应用"
+    if "libportaudio" in lowered or "_sounddevice_data" in lowered:
+        return "录音组件加载失败，请更新应用"
+    return message
+
+
 def configure_ssl_certificate() -> Path | None:
     """Restore a real CA path after py2app's SSL bootstrap runs."""
     configured = os.environ.get("VOICE_INPUT_SSL_CERT_FILE", "").strip()
@@ -1302,11 +1312,19 @@ def make_app():
 
         def _notify_error(self, title: str, error: Exception) -> None:
             message = str(error).strip() or error.__class__.__name__
+            display_message = concise_error_message(error)
             print(f"[错误] {title}：{message}", flush=True)
-            self._set_ui(status=f"{title}：{message[:100]}", icon="🎙")
+            self._set_ui(
+                status=f"{title}：{display_message[:100]}",
+                icon="🎙",
+            )
 
             def notify():
-                rumps.notification("语音输入", title, message[:200])
+                rumps.notification(
+                    "语音输入",
+                    title,
+                    display_message[:200],
+                )
 
             run_on_main(notify)
             self._reset_idle()
@@ -1598,15 +1616,38 @@ def validate_config(config: dict) -> list[str]:
 
 
 def run_audio_smoke_test(open_stream: bool = False) -> int:
-    """Verify bundled PortAudio loading, optionally opening the real input."""
+    """Verify bundled audio libraries, optionally opening the real input."""
+    wav_path = None
     try:
+        import numpy as np
         import sounddevice as sd
+        import soundfile as sf
 
         device = sd.query_devices(kind="input")
         device_name = str(device.get("name", "默认输入设备"))
         sample_rate = int(round(float(device["default_samplerate"])))
         if int(device.get("max_input_channels", 0)) < 1:
             raise RuntimeError("默认音频设备没有输入通道")
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="voice_input_audio_smoke_",
+            suffix=".wav",
+        )
+        os.close(descriptor)
+        wav_path = Path(temporary_name)
+        expected_frames = 320
+        sf.write(
+            str(wav_path),
+            np.zeros((expected_frames, 1), dtype="float32"),
+            16_000,
+        )
+        written_audio, written_rate = sf.read(
+            str(wav_path),
+            dtype="float32",
+            always_2d=True,
+        )
+        if int(written_rate) != 16_000 or len(written_audio) != expected_frames:
+            raise RuntimeError("WAV 写入后校验失败")
 
         if open_stream:
             stream = sd.InputStream(
@@ -1622,12 +1663,39 @@ def run_audio_smoke_test(open_stream: bool = False) -> int:
                 stream.close()
         print(
             f"AUDIO_SMOKE_OK device={device_name} "
-            f"rate={sample_rate} stream={'yes' if open_stream else 'no'}",
+            f"rate={sample_rate} wav=yes "
+            f"stream={'yes' if open_stream else 'no'}",
             flush=True,
         )
         return 0
     except Exception as error:
         print(f"AUDIO_SMOKE_FAILED {error}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        if wav_path is not None:
+            wav_path.unlink(missing_ok=True)
+
+
+def run_pipeline_smoke_test(wav_path: Path) -> int:
+    """Exercise ASR and LLM using the installed configuration."""
+    try:
+        if not wav_path.is_file():
+            raise FileNotFoundError(f"测试音频不存在：{wav_path}")
+        pipeline = SpeechPipeline(CONFIG_STORE.load())
+        raw = pipeline.transcribe(wav_path)
+        if not raw:
+            raise RuntimeError("语音识别返回空文本")
+        result = pipeline.polish(raw, "中文")
+        if not result:
+            raise RuntimeError("文字整理返回空文本")
+        print(
+            f"PIPELINE_SMOKE_OK raw_chars={len(raw)} "
+            f"result_chars={len(result)}",
+            flush=True,
+        )
+        return 0
+    except Exception as error:
+        print(f"PIPELINE_SMOKE_FAILED {error}", file=sys.stderr, flush=True)
         return 1
 
 
@@ -1686,6 +1754,16 @@ def run_settings_preview() -> None:
 
 
 def main() -> int:
+    if "--pipeline-smoke-test" in sys.argv:
+        option_index = sys.argv.index("--pipeline-smoke-test")
+        if option_index + 1 >= len(sys.argv):
+            print(
+                "PIPELINE_SMOKE_FAILED 缺少 WAV 文件路径",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 2
+        return run_pipeline_smoke_test(Path(sys.argv[option_index + 1]))
     if "--recording-smoke-test" in sys.argv:
         return run_audio_smoke_test(open_stream=True)
     if "--audio-smoke-test" in sys.argv:
