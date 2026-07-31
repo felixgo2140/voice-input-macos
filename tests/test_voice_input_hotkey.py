@@ -1,9 +1,6 @@
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-
-import numpy
 
 from macos_context import InputContext
 from voice_input import (
@@ -96,17 +93,19 @@ class HotkeyTests(unittest.TestCase):
             write=lambda *_args, **_kwargs: None,
             read=lambda *_args, **_kwargs: ([0.0] * 320, 16_000),
         )
-        with (
-            patch.dict(
-                sys.modules,
-                {
-                    "sounddevice": fake_sounddevice,
-                    "soundfile": fake_soundfile,
-                },
-            ),
-            patch("voice_input.time.sleep"),
-        ):
-            self.assertEqual(run_audio_smoke_test(open_stream=True), 0)
+        fake_numpy = SimpleNamespace(
+            zeros=lambda *_args, **_kwargs: [0.0] * 320
+        )
+        with patch("voice_input.time.sleep"):
+            self.assertEqual(
+                run_audio_smoke_test(
+                    open_stream=True,
+                    sounddevice_module=fake_sounddevice,
+                    soundfile_module=fake_soundfile,
+                    numpy_module=fake_numpy,
+                ),
+                0,
+            )
         self.assertEqual(events, ["start", "stop", "close"])
 
     def test_audio_smoke_test_reports_load_failure(self):
@@ -116,14 +115,15 @@ class HotkeyTests(unittest.TestCase):
             )
         )
         fake_soundfile = SimpleNamespace()
-        with patch.dict(
-            sys.modules,
-            {
-                "sounddevice": fake_sounddevice,
-                "soundfile": fake_soundfile,
-            },
-        ):
-            self.assertEqual(run_audio_smoke_test(), 1)
+        fake_numpy = SimpleNamespace()
+        self.assertEqual(
+            run_audio_smoke_test(
+                sounddevice_module=fake_sounddevice,
+                soundfile_module=fake_soundfile,
+                numpy_module=fake_numpy,
+            ),
+            1,
+        )
 
 
 class ContextTests(unittest.TestCase):

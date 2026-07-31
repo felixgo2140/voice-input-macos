@@ -1615,15 +1615,24 @@ def validate_config(config: dict) -> list[str]:
     return missing
 
 
-def run_audio_smoke_test(open_stream: bool = False) -> int:
+def run_audio_smoke_test(
+    open_stream: bool = False,
+    *,
+    sounddevice_module=None,
+    soundfile_module=None,
+    numpy_module=None,
+) -> int:
     """Verify bundled audio libraries, optionally opening the real input."""
     wav_path = None
     try:
-        import numpy as np
-        import sounddevice as sd
-        import soundfile as sf
+        if numpy_module is None:
+            import numpy as numpy_module
+        if sounddevice_module is None:
+            import sounddevice as sounddevice_module
+        if soundfile_module is None:
+            import soundfile as soundfile_module
 
-        device = sd.query_devices(kind="input")
+        device = sounddevice_module.query_devices(kind="input")
         device_name = str(device.get("name", "默认输入设备"))
         sample_rate = int(round(float(device["default_samplerate"])))
         if int(device.get("max_input_channels", 0)) < 1:
@@ -1636,12 +1645,12 @@ def run_audio_smoke_test(open_stream: bool = False) -> int:
         os.close(descriptor)
         wav_path = Path(temporary_name)
         expected_frames = 320
-        sf.write(
+        soundfile_module.write(
             str(wav_path),
-            np.zeros((expected_frames, 1), dtype="float32"),
+            numpy_module.zeros((expected_frames, 1), dtype="float32"),
             16_000,
         )
-        written_audio, written_rate = sf.read(
+        written_audio, written_rate = soundfile_module.read(
             str(wav_path),
             dtype="float32",
             always_2d=True,
@@ -1650,7 +1659,7 @@ def run_audio_smoke_test(open_stream: bool = False) -> int:
             raise RuntimeError("WAV 写入后校验失败")
 
         if open_stream:
-            stream = sd.InputStream(
+            stream = sounddevice_module.InputStream(
                 samplerate=sample_rate,
                 channels=1,
                 dtype="float32",
