@@ -33,4 +33,10 @@ fi
 
 codesign --verify --deep --strict "$app_path"
 plutil -lint "$app_path/Contents/Info.plist"
+portaudio_path="$app_path/Contents/Resources/lib/python3.12/_sounddevice_data/portaudio-binaries/libportaudio.dylib"
+if [[ ! -f "$portaudio_path" ]]; then
+  echo "Missing uncompressed PortAudio library: $portaudio_path" >&2
+  exit 1
+fi
+"$app_path/Contents/MacOS/Voice Input" --audio-smoke-test
 echo "$app_path"

@@ -11,6 +11,7 @@ OPTIONS = {
         "rumps",
         "pynput",
         "sounddevice",
+        "_sounddevice_data",
         "soundfile",
         "numpy",
         "openai",
@@ -32,8 +33,8 @@ OPTIONS = {
     "plist": {
         "CFBundleDisplayName": "Voice Input",
         "CFBundleIdentifier": "com.felix.voiceinput",
-        "CFBundleShortVersionString": "1.3.3",
-        "CFBundleVersion": "1303",
+        "CFBundleShortVersionString": "1.3.4",
+        "CFBundleVersion": "1304",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "LSArchitecturePriority": ["arm64"],
@@ -47,7 +48,7 @@ OPTIONS = {
 
 setup(
     name="Voice Input",
-    version="1.3.3",
+    version="1.3.4",
     app=APP,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],

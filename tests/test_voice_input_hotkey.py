@@ -1,4 +1,6 @@
+import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from macos_context import InputContext
@@ -10,6 +12,7 @@ from voice_input import (
     paste_result_to_context,
     prefer_external_input_context,
     right_option_transition,
+    run_audio_smoke_test,
     start_optional_escape_monitor,
     status_with_icon,
 )
@@ -56,6 +59,43 @@ class HotkeyTests(unittest.TestCase):
 
     def test_available_escape_monitor_reports_ready(self):
         self.assertTrue(start_optional_escape_monitor(lambda: None))
+
+    def test_audio_smoke_test_loads_device_and_stream(self):
+        events = []
+
+        class Stream:
+            def start(self):
+                events.append("start")
+
+            def stop(self):
+                events.append("stop")
+
+            def close(self):
+                events.append("close")
+
+        fake_sounddevice = SimpleNamespace(
+            query_devices=lambda kind: {
+                "name": "Test Microphone",
+                "default_samplerate": 48_000,
+                "max_input_channels": 1,
+            },
+            InputStream=lambda **_kwargs: Stream(),
+        )
+        with (
+            patch.dict(sys.modules, {"sounddevice": fake_sounddevice}),
+            patch("voice_input.time.sleep"),
+        ):
+            self.assertEqual(run_audio_smoke_test(open_stream=True), 0)
+        self.assertEqual(events, ["start", "stop", "close"])
+
+    def test_audio_smoke_test_reports_load_failure(self):
+        fake_sounddevice = SimpleNamespace(
+            query_devices=lambda kind: (_ for _ in ()).throw(
+                OSError("missing PortAudio")
+            )
+        )
+        with patch.dict(sys.modules, {"sounddevice": fake_sounddevice}):
+            self.assertEqual(run_audio_smoke_test(), 1)
 
 
 class ContextTests(unittest.TestCase):

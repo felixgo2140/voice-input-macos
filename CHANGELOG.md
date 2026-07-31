@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.4 — 2026-07-30
+
+- Keeps sounddevice's bundled PortAudio dynamic library outside the Python ZIP
+  so recording can start in the packaged macOS application.
+- Adds build-time audio loading verification and an optional real input-stream
+  smoke test.
+
 ## 1.3.3 — 2026-07-29
 
 - Replaces free-text ASR and LLM provider/model fields with linked dropdowns.

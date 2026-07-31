@@ -1597,6 +1597,40 @@ def validate_config(config: dict) -> list[str]:
     return missing
 
 
+def run_audio_smoke_test(open_stream: bool = False) -> int:
+    """Verify bundled PortAudio loading, optionally opening the real input."""
+    try:
+        import sounddevice as sd
+
+        device = sd.query_devices(kind="input")
+        device_name = str(device.get("name", "默认输入设备"))
+        sample_rate = int(round(float(device["default_samplerate"])))
+        if int(device.get("max_input_channels", 0)) < 1:
+            raise RuntimeError("默认音频设备没有输入通道")
+
+        if open_stream:
+            stream = sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+            )
+            try:
+                stream.start()
+                time.sleep(0.12)
+                stream.stop()
+            finally:
+                stream.close()
+        print(
+            f"AUDIO_SMOKE_OK device={device_name} "
+            f"rate={sample_rate} stream={'yes' if open_stream else 'no'}",
+            flush=True,
+        )
+        return 0
+    except Exception as error:
+        print(f"AUDIO_SMOKE_FAILED {error}", file=sys.stderr, flush=True)
+        return 1
+
+
 def run_panel_preview(config: dict) -> None:
     import rumps
 
@@ -1652,6 +1686,11 @@ def run_settings_preview() -> None:
 
 
 def main() -> int:
+    if "--recording-smoke-test" in sys.argv:
+        return run_audio_smoke_test(open_stream=True)
+    if "--audio-smoke-test" in sys.argv:
+        return run_audio_smoke_test()
+
     config = CONFIG_STORE.load()
     if "--panel-preview" in sys.argv:
         run_panel_preview(config)
