@@ -19,22 +19,22 @@ from typing import Callable, Iterable, Mapping, MutableMapping, Sequence
 DEFAULT_CONFIG = {
     "hotkey": "<alt_r>",
     "asr": {
-        "provider": "Qwen",
+        "provider": "Qwen 百炼",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": "",
         "api_key_env": "VOICE_INPUT_ASR_API_KEY",
-        "keychain_account": "qwen-api-key",
+        "keychain_account": "qwen-bailian-api-key",
         "model": "qwen3-asr-flash",
         "max_file_seconds": 300,
         "chunk_seconds": 270,
     },
     "llm": {
-        "provider": "Qwen",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "provider": "Qwen 3.8 Coding Plan",
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "api_key": "",
         "api_key_env": "VOICE_INPUT_LLM_API_KEY",
-        "keychain_account": "qwen-api-key",
-        "model": "qwen-plus",
+        "keychain_account": "qwen-coding-api-key",
+        "model": "qwen3.8-max",
         "stream": True,
         "temperature": 0.2,
     },
@@ -61,8 +61,11 @@ DEFAULT_CONFIG = {
 
 
 PROVIDER_CREDENTIAL_ALIASES = {
-    "Qwen": "qwen",
+    "Qwen": "qwen-bailian",
+    "Qwen 百炼": "qwen-bailian",
+    "Qwen 3.8 Coding Plan": "qwen-coding",
     "Kimi": "kimi",
+    "Kimi Coding Plan": "kimi-coding",
     "OpenAI": "openai",
     "智谱 GLM-ASR": "zhipu",
     "DeepSeek": "deepseek",
@@ -808,7 +811,10 @@ class SpeechPipeline:
                     **request, stream=True
                 )
                 for chunk in stream:
-                    delta = chunk.choices[0].delta.content or ""
+                    choices = getattr(chunk, "choices", None) or []
+                    if not choices:
+                        continue
+                    delta = choices[0].delta.content or ""
                     pieces += delta
                     partial = sanitize_model_output(pieces)
                     if on_partial and partial:

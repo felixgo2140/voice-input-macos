@@ -46,11 +46,11 @@ class ConfigTests(unittest.TestCase):
     def test_creates_default_config(self):
         config = self.store.load()
         self.assertEqual(config["output"]["mode"], "auto")
-        self.assertEqual(config["asr"]["provider"], "Qwen")
+        self.assertEqual(config["asr"]["provider"], "Qwen 百炼")
         self.assertEqual(config["asr"]["model"], "qwen3-asr-flash")
-        self.assertEqual(config["llm"]["model"], "qwen-plus")
+        self.assertEqual(config["llm"]["model"], "qwen3.8-max")
         self.assertEqual(
-            config["asr"]["keychain_account"], "qwen-api-key"
+            config["asr"]["keychain_account"], "qwen-bailian-api-key"
         )
         self.assertEqual(config["recording"]["max_seconds"], 600)
         self.assertTrue(self.path.exists())
@@ -102,7 +102,9 @@ class ConfigTests(unittest.TestCase):
             asr_secret="new-secret",
         )
         self.assertEqual(config["asr"]["model"], "custom-asr")
-        self.assertEqual(self.secrets.values["qwen-api-key"], "new-secret")
+        self.assertEqual(
+            self.secrets.values["qwen-bailian-api-key"], "new-secret"
+        )
         self.assertNotIn("new-secret", self.path.read_text(encoding="utf-8"))
 
     def test_blank_secret_keeps_existing_credential(self):
@@ -142,10 +144,16 @@ class ConfigTests(unittest.TestCase):
 
     def test_same_provider_uses_one_credential_account(self):
         self.assertEqual(
-            credential_account_for_provider("Qwen"), "qwen-api-key"
+            credential_account_for_provider("Qwen 百炼"),
+            "qwen-bailian-api-key",
         )
         self.assertEqual(
-            credential_account_for_provider("Kimi"), "kimi-api-key"
+            credential_account_for_provider("Qwen 3.8 Coding Plan"),
+            "qwen-coding-api-key",
+        )
+        self.assertEqual(
+            credential_account_for_provider("Kimi Coding Plan"),
+            "kimi-coding-api-key",
         )
         self.assertEqual(
             credential_account_for_provider("Groq Whisper"), "groq-api-key"
@@ -158,8 +166,8 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "必须保持一致"):
             self.store.save_credentials(
                 {
-                    "asr": {"keychain_account": "qwen-api-key"},
-                    "llm": {"keychain_account": "qwen-api-key"},
+                    "asr": {"keychain_account": "qwen-bailian-api-key"},
+                    "llm": {"keychain_account": "qwen-bailian-api-key"},
                 },
                 asr_secret="first-secret",
                 llm_secret="second-secret",
@@ -279,7 +287,7 @@ class QwenTranscriptionTests(unittest.TestCase):
 
         pipeline = SpeechPipeline.__new__(SpeechPipeline)
         pipeline.asr_config = {
-            "provider": "Qwen",
+            "provider": "Qwen 百炼",
             "model": "qwen3-asr-flash",
         }
         pipeline.asr_client = SimpleNamespace(
@@ -323,6 +331,47 @@ class QwenTranscriptionTests(unittest.TestCase):
         self.assertEqual(result, "你好")
         self.assertEqual(partials[-1], "你好")
         self.assertTrue(completions.calls[0]["stream"])
+
+
+class PolishStreamTests(unittest.TestCase):
+    def test_empty_usage_chunk_is_ignored(self):
+        from types import SimpleNamespace
+
+        class Completions:
+            def create(self, **kwargs):
+                return iter(
+                    [
+                        SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(
+                                    delta=SimpleNamespace(content="整理")
+                                )
+                            ]
+                        ),
+                        SimpleNamespace(choices=[]),
+                        SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(
+                                    delta=SimpleNamespace(content="完成")
+                                )
+                            ]
+                        ),
+                    ]
+                )
+
+        pipeline = SpeechPipeline.__new__(SpeechPipeline)
+        pipeline.llm_config = {
+            "model": "qwen3.8-max",
+            "temperature": 0.2,
+            "stream": True,
+        }
+        pipeline.llm_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=Completions())
+        )
+        partials = []
+        result = pipeline.polish("原文", "中文", partials.append)
+        self.assertEqual(result, "整理完成")
+        self.assertEqual(partials[-1], "整理完成")
 
 
 class PositionTests(unittest.TestCase):

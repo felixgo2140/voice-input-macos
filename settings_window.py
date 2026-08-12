@@ -17,7 +17,7 @@ _ACTION_CLASS = None
 SERVICE_CATALOG = {
     "asr": (
         {
-            "provider": "Qwen",
+            "provider": "Qwen 百炼",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "max_file_seconds": 300,
             "chunk_seconds": 270,
@@ -40,24 +40,34 @@ SERVICE_CATALOG = {
     ),
     "llm": (
         {
-            "provider": "Qwen",
+            "provider": "Qwen 3.8 Coding Plan",
+            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "temperature": 0.2,
+            "models": (
+                "qwen3.8-max",
+            ),
+        },
+        {
+            "provider": "Qwen 百炼",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "temperature": 0.2,
             "models": (
                 "qwen-plus",
                 "qwen3.8-max",
             ),
         },
         {
-            "provider": "Kimi",
-            "base_url": "https://api.moonshot.cn/v1",
+            "provider": "Kimi Coding Plan",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "temperature": 1.0,
             "models": (
-                "kimi-k3",
-                "kimi-k2.6",
+                "k3",
             ),
         },
         {
             "provider": "DeepSeek",
             "base_url": "https://api.deepseek.com",
+            "temperature": 0.2,
             "models": (
                 "deepseek-v4-flash",
                 "deepseek-v4-pro",
@@ -68,6 +78,7 @@ SERVICE_CATALOG = {
         {
             "provider": "Groq",
             "base_url": "https://api.groq.com/openai/v1",
+            "temperature": 0.2,
             "models": (
                 "llama-3.3-70b-versatile",
                 "openai/gpt-oss-20b",
@@ -514,6 +525,10 @@ class SettingsController:
                             selection.get("chunk_seconds", 540)
                         ),
                     }
+                )
+            else:
+                selected_services[section_name]["temperature"] = float(
+                    selection.get("temperature", 0.2)
                 )
         mode_index = int(self.controls["output_mode"].indexOfSelectedItem())
         return {

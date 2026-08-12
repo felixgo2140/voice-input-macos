@@ -33,12 +33,13 @@
 
 默认使用：
 
-- ASR：Qwen `qwen3-asr-flash`
-- LLM：Qwen `qwen-plus`
+- ASR：Qwen 百炼 `qwen3-asr-flash`
+- LLM：Qwen Coding Plan `qwen3.8-max`
 
-同一份阿里云百炼 API Key 会由两个阶段共享，只需保存一次。文字整理也可选择
-Kimi；智谱、DeepSeek、Groq 等服务的凭据使用独立存储槽，切换服务不会混用
-Key。Codex 登录使用的 OAuth 凭据不会被读取或复用。
+Qwen 3.8 Coding Plan 与普通百炼使用不同的端点和 API Key，因此分别保存为
+独立凭据。若希望只使用一把百炼 Key，可在文字整理下拉框选择 `Qwen 百炼 / qwen-plus`。
+文字整理也可选择 `Kimi Coding Plan / k3`；程序会自动使用该模型要求的
+`temperature=1`。Codex 登录使用的 OAuth 凭据不会被读取或复用。
 
 ## 安装发布版
 
