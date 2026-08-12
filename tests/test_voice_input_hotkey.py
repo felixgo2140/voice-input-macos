@@ -11,6 +11,7 @@ from voice_input import (
     is_plain_enter_event,
     paste_result_to_context,
     prefer_external_input_context,
+    preview_error_is_fatal,
     right_option_transition,
     run_audio_smoke_test,
     start_optional_escape_monitor,
@@ -58,6 +59,17 @@ class HotkeyTests(unittest.TestCase):
             ),
             "音频编码组件加载失败，请更新应用",
         )
+
+    def test_asr_quota_error_is_concise_and_stops_preview(self):
+        error = RuntimeError("429 code 1113 余额不足或无可用资源包")
+        self.assertEqual(
+            concise_error_message(error),
+            "语音识别服务额度不足，请检查服务账户或更换模型服务",
+        )
+        self.assertTrue(preview_error_is_fatal(error))
+
+    def test_temporary_network_error_does_not_stop_preview_immediately(self):
+        self.assertFalse(preview_error_is_fatal(TimeoutError("timed out")))
 
     def test_missing_accessibility_does_not_abort_startup(self):
         def unavailable():

@@ -110,44 +110,54 @@ def get_caret_frame(element) -> tuple[float, float, float, float] | None:
     """Return an AX frame using global top-left-origin coordinates."""
     if element is None:
         return None
-    from ApplicationServices import (
-        AXUIElementCopyParameterizedAttributeValue,
-        kAXBoundsForRangeParameterizedAttribute,
-        kAXFrameAttribute,
-        kAXSelectedTextRangeAttribute,
-        kAXValueCGRectType,
-    )
+    import ApplicationServices as ax
 
-    selected_range = _copy_attribute(element, kAXSelectedTextRangeAttribute)
+    # Some py2app builds expose the AX functions but omit this constant from
+    # ApplicationServices.__init__. The underlying Accessibility API accepts
+    # the canonical CFString attribute name, so do not make caret placement a
+    # hard dependency on that Python export.
+    frame_attribute = getattr(ax, "kAXFrameAttribute", "AXFrame")
+
+    selected_range = _copy_attribute(element, ax.kAXSelectedTextRangeAttribute)
     if selected_range is not None:
-        error, bounds = AXUIElementCopyParameterizedAttributeValue(
+        error, bounds = ax.AXUIElementCopyParameterizedAttributeValue(
             element,
-            kAXBoundsForRangeParameterizedAttribute,
+            ax.kAXBoundsForRangeParameterizedAttribute,
             selected_range,
             None,
         )
         if not error and bounds is not None:
-            rect = _ax_value(bounds, kAXValueCGRectType)
+            rect = _ax_value(bounds, ax.kAXValueCGRectType)
             result = _rect_tuple(rect)
             if result is not None:
                 return result
 
-    frame_value = _copy_attribute(element, kAXFrameAttribute)
+    frame_value = _copy_attribute(element, frame_attribute)
     if frame_value is None:
         return None
-    return _rect_tuple(_ax_value(frame_value, kAXValueCGRectType))
+    return _rect_tuple(_ax_value(frame_value, ax.kAXValueCGRectType))
 
 
 def capture_input_context() -> InputContext:
-    element = focused_element()
+    try:
+        element = focused_element()
+    except Exception:
+        return InputContext()
     if element is None:
         return InputContext()
-    texts = collect_context_texts(element)
+    try:
+        texts = collect_context_texts(element)
+    except Exception:
+        texts = []
+    try:
+        caret_frame = get_caret_frame(element)
+    except Exception:
+        caret_frame = None
     return InputContext(
         element=element,
         pid=_element_pid(element),
         detected_language=detect_language_from_texts(texts),
-        caret_frame=get_caret_frame(element),
+        caret_frame=caret_frame,
     )
 
 

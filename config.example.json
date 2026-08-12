@@ -34,7 +34,11 @@
     "enabled": true,
     "first_update_seconds": 1.2,
     "interval_seconds": 2,
-    "minimum_seconds": 0.8
+    "minimum_seconds": 0.8,
+    "max_consecutive_failures": 2
+  },
+  "recording": {
+    "max_seconds": 600
   },
   "network": {
     "timeout_seconds": 45,
