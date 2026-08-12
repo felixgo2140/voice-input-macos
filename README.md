@@ -31,12 +31,15 @@
 - 辅助功能权限（全局快捷键、返回原输入框和粘贴）
 - 用户自行提供 ASR 与 LLM API Key
 
-默认示例使用：
+默认使用：
 
-- ASR：智谱 `glm-asr-2512`
-- LLM：DeepSeek `deepseek-chat`
+- ASR：Qwen 百炼 `qwen3-asr-flash`
+- LLM：Qwen Coding Plan `qwen3.8-max`
 
-也可以使用其他 OpenAI 兼容服务。
+Qwen 3.8 Coding Plan 与普通百炼使用不同的端点和 API Key，因此分别保存为
+独立凭据。若希望只使用一把百炼 Key，可在文字整理下拉框选择 `Qwen 百炼 / qwen-plus`。
+文字整理也可选择 `Kimi Coding Plan / k3`；程序会自动使用该模型要求的
+`temperature=1`。Codex 登录使用的 OAuth 凭据不会被读取或复用。
 
 ## 安装发布版
 
@@ -62,7 +65,7 @@ cd voice-input-macos
 
 ```bash
 ./build-app.sh
-./package-release.sh 1.3.6
+./package-release.sh 1.3.7
 ```
 
 如果拥有 Apple Developer ID：

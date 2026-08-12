@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.7 — 2026-08-12
+
+- Makes Qwen Model Studio `qwen3-asr-flash` the default speech recognition
+  model and Qwen Coding Plan `qwen3.8-max` the default cleanup model.
+- Sends local WAV recordings to Qwen ASR as Base64 chat-audio input and
+  preserves incremental transcript updates.
+- Adds Kimi Coding Plan `k3` as an optional cleanup model and applies its
+  required temperature value automatically.
+- Keeps Qwen Model Studio, Qwen Coding Plan, and Kimi Coding Plan credentials
+  separate because their API keys and endpoints are not interchangeable.
+- Migrates legacy ASR and LLM credential slots without deleting old values.
+- Shows whether the selected provider already has a saved credential.
+
 ## 1.3.6 — 2026-08-12
 
 - Adds explicit “Start recording” and “Stop recording and process” menu items.

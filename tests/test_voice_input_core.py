@@ -9,6 +9,8 @@ from unittest.mock import patch
 from voice_input_core import (
     ConfigStore,
     ScreenBounds,
+    SpeechPipeline,
+    credential_account_for_provider,
     deep_fill_missing,
     detect_language_from_texts,
     is_meaningful_transcript,
@@ -44,6 +46,12 @@ class ConfigTests(unittest.TestCase):
     def test_creates_default_config(self):
         config = self.store.load()
         self.assertEqual(config["output"]["mode"], "auto")
+        self.assertEqual(config["asr"]["provider"], "Qwen 百炼")
+        self.assertEqual(config["asr"]["model"], "qwen3-asr-flash")
+        self.assertEqual(config["llm"]["model"], "qwen3.8-max")
+        self.assertEqual(
+            config["asr"]["keychain_account"], "qwen-bailian-api-key"
+        )
         self.assertEqual(config["recording"]["max_seconds"], 600)
         self.assertTrue(self.path.exists())
 
@@ -94,13 +102,76 @@ class ConfigTests(unittest.TestCase):
             asr_secret="new-secret",
         )
         self.assertEqual(config["asr"]["model"], "custom-asr")
-        self.assertEqual(self.secrets.values["asr-api-key"], "new-secret")
+        self.assertEqual(
+            self.secrets.values["qwen-bailian-api-key"], "new-secret"
+        )
         self.assertNotIn("new-secret", self.path.read_text(encoding="utf-8"))
 
     def test_blank_secret_keeps_existing_credential(self):
         self.secrets.values["llm-api-key"] = "existing"
         self.store.save_credentials({}, llm_secret=None)
         self.assertEqual(self.secrets.values["llm-api-key"], "existing")
+
+    def test_migrates_legacy_secrets_to_provider_accounts(self):
+        self.secrets.values["asr-api-key"] = "zhipu-secret"
+        self.secrets.values["llm-api-key"] = "deepseek-secret"
+        self.path.write_text(
+            json.dumps(
+                {
+                    "asr": {
+                        "provider": "智谱 GLM-ASR",
+                        "keychain_account": "asr-api-key",
+                    },
+                    "llm": {
+                        "provider": "DeepSeek",
+                        "keychain_account": "llm-api-key",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = self.store.load()
+        self.assertEqual(
+            config["asr"]["keychain_account"], "zhipu-api-key"
+        )
+        self.assertEqual(
+            config["llm"]["keychain_account"], "deepseek-api-key"
+        )
+        self.assertEqual(self.secrets.values["zhipu-api-key"], "zhipu-secret")
+        self.assertEqual(
+            self.secrets.values["deepseek-api-key"], "deepseek-secret"
+        )
+
+    def test_same_provider_uses_one_credential_account(self):
+        self.assertEqual(
+            credential_account_for_provider("Qwen 百炼"),
+            "qwen-bailian-api-key",
+        )
+        self.assertEqual(
+            credential_account_for_provider("Qwen 3.8 Coding Plan"),
+            "qwen-coding-api-key",
+        )
+        self.assertEqual(
+            credential_account_for_provider("Kimi Coding Plan"),
+            "kimi-coding-api-key",
+        )
+        self.assertEqual(
+            credential_account_for_provider("Groq Whisper"), "groq-api-key"
+        )
+        self.assertEqual(
+            credential_account_for_provider("Groq"), "groq-api-key"
+        )
+
+    def test_shared_provider_rejects_conflicting_keys(self):
+        with self.assertRaisesRegex(ValueError, "必须保持一致"):
+            self.store.save_credentials(
+                {
+                    "asr": {"keychain_account": "qwen-bailian-api-key"},
+                    "llm": {"keychain_account": "qwen-bailian-api-key"},
+                },
+                asr_secret="first-secret",
+                llm_secret="second-secret",
+            )
 
     def test_invalid_json_shape_is_rejected(self):
         self.path.write_text("[]", encoding="utf-8")
@@ -179,6 +250,128 @@ class OutputTests(unittest.TestCase):
 
     def test_joins_chinese_chunks_without_space(self):
         self.assertEqual(join_transcript_parts(["你好", "世界"]), "你好世界")
+
+
+class QwenTranscriptionTests(unittest.TestCase):
+    class _Completions:
+        def __init__(self, stream_chunks=None, final_text=""):
+            self.calls = []
+            self.stream_chunks = stream_chunks or []
+            self.final_text = final_text
+
+        def create(self, **kwargs):
+            from types import SimpleNamespace
+
+            self.calls.append(kwargs)
+            if kwargs.get("stream"):
+                return iter(
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(content=text)
+                            )
+                        ]
+                    )
+                    for text in self.stream_chunks
+                )
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=self.final_text)
+                    )
+                ]
+            )
+
+    def _pipeline(self, completions):
+        from types import SimpleNamespace
+
+        pipeline = SpeechPipeline.__new__(SpeechPipeline)
+        pipeline.asr_config = {
+            "provider": "Qwen 百炼",
+            "model": "qwen3-asr-flash",
+        }
+        pipeline.asr_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=completions)
+        )
+        return pipeline
+
+    def test_qwen_uses_chat_audio_data_url(self):
+        completions = self._Completions(final_text="测试结果")
+        pipeline = self._pipeline(completions)
+        wav_path = Path(self._testMethodName + ".wav")
+        try:
+            wav_path.write_bytes(b"RIFF-test")
+            result = pipeline._transcribe_single(wav_path)
+        finally:
+            wav_path.unlink(missing_ok=True)
+
+        self.assertEqual(result, "测试结果")
+        request = completions.calls[0]
+        self.assertEqual(request["model"], "qwen3-asr-flash")
+        audio = request["messages"][0]["content"][0]
+        self.assertEqual(audio["type"], "input_audio")
+        self.assertTrue(
+            audio["input_audio"]["data"].startswith(
+                "data:audio/wav;base64,"
+            )
+        )
+        self.assertTrue(request["extra_body"]["asr_options"]["enable_itn"])
+
+    def test_qwen_streams_partial_transcript(self):
+        completions = self._Completions(stream_chunks=["你", "好"])
+        pipeline = self._pipeline(completions)
+        partials = []
+        wav_path = Path(self._testMethodName + ".wav")
+        try:
+            wav_path.write_bytes(b"RIFF-test")
+            result = pipeline._transcribe_single(wav_path, partials.append)
+        finally:
+            wav_path.unlink(missing_ok=True)
+
+        self.assertEqual(result, "你好")
+        self.assertEqual(partials[-1], "你好")
+        self.assertTrue(completions.calls[0]["stream"])
+
+
+class PolishStreamTests(unittest.TestCase):
+    def test_empty_usage_chunk_is_ignored(self):
+        from types import SimpleNamespace
+
+        class Completions:
+            def create(self, **kwargs):
+                return iter(
+                    [
+                        SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(
+                                    delta=SimpleNamespace(content="整理")
+                                )
+                            ]
+                        ),
+                        SimpleNamespace(choices=[]),
+                        SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(
+                                    delta=SimpleNamespace(content="完成")
+                                )
+                            ]
+                        ),
+                    ]
+                )
+
+        pipeline = SpeechPipeline.__new__(SpeechPipeline)
+        pipeline.llm_config = {
+            "model": "qwen3.8-max",
+            "temperature": 0.2,
+            "stream": True,
+        }
+        pipeline.llm_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=Completions())
+        )
+        partials = []
+        result = pipeline.polish("原文", "中文", partials.append)
+        self.assertEqual(result, "整理完成")
+        self.assertEqual(partials[-1], "整理完成")
 
 
 class PositionTests(unittest.TestCase):
