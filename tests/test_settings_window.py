@@ -12,6 +12,26 @@ class ServiceChoicesTests(unittest.TestCase):
                 self.assertTrue(choice["provider"])
                 self.assertTrue(choice["base_url"].startswith("https://"))
                 self.assertTrue(choice["models"])
+                if section_name == "asr":
+                    self.assertGreater(choice["max_file_seconds"], 0)
+                    self.assertGreater(choice["chunk_seconds"], 0)
+
+    def test_qwen_models_are_the_defaults(self):
+        self.assertEqual(SERVICE_CATALOG["asr"][0]["provider"], "Qwen")
+        self.assertEqual(
+            SERVICE_CATALOG["asr"][0]["models"][0], "qwen3-asr-flash"
+        )
+        self.assertEqual(SERVICE_CATALOG["llm"][0]["provider"], "Qwen")
+        self.assertEqual(
+            SERVICE_CATALOG["llm"][0]["models"][0], "qwen-plus"
+        )
+
+    def test_kimi_is_available_for_cleanup(self):
+        kimi = next(
+            choice for choice in SERVICE_CATALOG["llm"]
+            if choice["provider"] == "Kimi"
+        )
+        self.assertEqual(kimi["models"][0], "kimi-k3")
 
     def test_current_model_is_preserved_as_a_selection(self):
         choices = service_choices(

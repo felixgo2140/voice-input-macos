@@ -31,12 +31,14 @@
 - 辅助功能权限（全局快捷键、返回原输入框和粘贴）
 - 用户自行提供 ASR 与 LLM API Key
 
-默认示例使用：
+默认使用：
 
-- ASR：智谱 `glm-asr-2512`
-- LLM：DeepSeek `deepseek-chat`
+- ASR：Qwen `qwen3-asr-flash`
+- LLM：Qwen `qwen-plus`
 
-也可以使用其他 OpenAI 兼容服务。
+同一份阿里云百炼 API Key 会由两个阶段共享，只需保存一次。文字整理也可选择
+Kimi；智谱、DeepSeek、Groq 等服务的凭据使用独立存储槽，切换服务不会混用
+Key。Codex 登录使用的 OAuth 凭据不会被读取或复用。
 
 ## 安装发布版
 
@@ -62,7 +64,7 @@ cd voice-input-macos
 
 ```bash
 ./build-app.sh
-./package-release.sh 1.3.6
+./package-release.sh 1.3.7
 ```
 
 如果拥有 Apple Developer ID：

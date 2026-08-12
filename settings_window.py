@@ -6,7 +6,10 @@ import threading
 from copy import deepcopy
 
 from macos_context import accessibility_is_trusted
-from voice_input_core import configured_api_key
+from voice_input_core import (
+    configured_api_key,
+    credential_account_for_provider,
+)
 
 
 _ACTION_CLASS = None
@@ -14,26 +17,44 @@ _ACTION_CLASS = None
 SERVICE_CATALOG = {
     "asr": (
         {
+            "provider": "Qwen",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "max_file_seconds": 300,
+            "chunk_seconds": 270,
+            "models": ("qwen3-asr-flash",),
+        },
+        {
             "provider": "智谱 GLM-ASR",
             "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "max_file_seconds": 29,
+            "chunk_seconds": 28,
             "models": ("glm-asr-2512",),
         },
         {
             "provider": "Groq Whisper",
             "base_url": "https://api.groq.com/openai/v1",
+            "max_file_seconds": 600,
+            "chunk_seconds": 540,
             "models": ("whisper-large-v3-turbo", "whisper-large-v3"),
-        },
-        {
-            "provider": "OpenAI",
-            "base_url": "https://api.openai.com/v1",
-            "models": (
-                "gpt-4o-mini-transcribe",
-                "gpt-4o-transcribe",
-                "whisper-1",
-            ),
         },
     ),
     "llm": (
+        {
+            "provider": "Qwen",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "models": (
+                "qwen-plus",
+                "qwen3.8-max",
+            ),
+        },
+        {
+            "provider": "Kimi",
+            "base_url": "https://api.moonshot.cn/v1",
+            "models": (
+                "kimi-k3",
+                "kimi-k2.6",
+            ),
+        },
         {
             "provider": "DeepSeek",
             "base_url": "https://api.deepseek.com",
@@ -43,11 +64,6 @@ SERVICE_CATALOG = {
                 "deepseek-chat",
                 "deepseek-reasoner",
             ),
-        },
-        {
-            "provider": "OpenAI",
-            "base_url": "https://api.openai.com/v1",
-            "models": ("gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"),
         },
         {
             "provider": "Groq",
@@ -437,8 +453,30 @@ class SettingsController:
         self.controls[f"{section_name}_endpoint"].setStringValue_(
             f"地址：{endpoint}"
         )
+        account = credential_account_for_provider(provider)
+        saved_config = self.config_store.load().get(section_name, {})
+        key_probe = {
+            "api_key_env": saved_config.get("api_key_env", ""),
+            "keychain_account": account,
+            "api_key": "",
+        }
+        has_key = bool(
+            configured_api_key(
+                key_probe,
+                secret_store=self.config_store.secret_store,
+            )
+        )
+        placeholder = (
+            f"已保存 {provider} 凭据；留空保留"
+            if has_key
+            else f"请输入 {provider} API Key"
+        )
+        self.controls[f"{section_name}_key"].setPlaceholderString_(
+            placeholder
+        )
 
     def provider_changed(self, section_name: str) -> None:
+        self.controls[f"{section_name}_key"].setStringValue_("")
         self._refresh_service(section_name)
 
     @staticmethod
@@ -464,7 +502,19 @@ class SettingsController:
                 "base_url": str(selection["base_url"]).rstrip("/"),
                 "model": model,
                 "api_key": "",
+                "keychain_account": credential_account_for_provider(provider),
             }
+            if section_name == "asr":
+                selected_services[section_name].update(
+                    {
+                        "max_file_seconds": int(
+                            selection.get("max_file_seconds", 600)
+                        ),
+                        "chunk_seconds": int(
+                            selection.get("chunk_seconds", 540)
+                        ),
+                    }
+                )
         mode_index = int(self.controls["output_mode"].indexOfSelectedItem())
         return {
             "asr": selected_services["asr"],

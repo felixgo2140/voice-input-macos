@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import hashlib
 import os
 import re
 import tempfile
@@ -17,22 +19,22 @@ from typing import Callable, Iterable, Mapping, MutableMapping, Sequence
 DEFAULT_CONFIG = {
     "hotkey": "<alt_r>",
     "asr": {
-        "provider": "智谱 GLM-ASR",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "provider": "Qwen",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": "",
         "api_key_env": "VOICE_INPUT_ASR_API_KEY",
-        "keychain_account": "asr-api-key",
-        "model": "glm-asr-2512",
-        "max_file_seconds": 29,
-        "chunk_seconds": 28,
+        "keychain_account": "qwen-api-key",
+        "model": "qwen3-asr-flash",
+        "max_file_seconds": 300,
+        "chunk_seconds": 270,
     },
     "llm": {
-        "provider": "DeepSeek",
-        "base_url": "https://api.deepseek.com",
+        "provider": "Qwen",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": "",
         "api_key_env": "VOICE_INPUT_LLM_API_KEY",
-        "keychain_account": "llm-api-key",
-        "model": "deepseek-chat",
+        "keychain_account": "qwen-api-key",
+        "model": "qwen-plus",
         "stream": True,
         "temperature": 0.2,
     },
@@ -56,6 +58,29 @@ DEFAULT_CONFIG = {
     "auto_paste": True,
     "onboarding": {"completed": False},
 }
+
+
+PROVIDER_CREDENTIAL_ALIASES = {
+    "Qwen": "qwen",
+    "Kimi": "kimi",
+    "OpenAI": "openai",
+    "智谱 GLM-ASR": "zhipu",
+    "DeepSeek": "deepseek",
+    "Groq Whisper": "groq",
+    "Groq": "groq",
+}
+
+
+def credential_account_for_provider(provider: str) -> str:
+    """Return one shared private credential account per API provider."""
+    provider = str(provider or "").strip()
+    alias = PROVIDER_CREDENTIAL_ALIASES.get(provider)
+    if not alias:
+        alias = re.sub(r"[^a-z0-9]+", "-", provider.lower()).strip("-")
+    if not alias:
+        digest = hashlib.sha256(provider.encode("utf-8")).hexdigest()[:10]
+        alias = f"provider-{digest}"
+    return f"{alias}-api-key"
 
 POLISH_SYSTEM_PROMPT = """你是一个语音文字整理助手。用户会提供一段语音转写原文，通常是中文，可能夹杂英文词汇。请在不改变原意的前提下，将它整理成清晰、简洁、自然的文字，并用{target}输出。
 
@@ -123,6 +148,7 @@ class ConfigStore:
 
             changed = deep_fill_missing(config, DEFAULT_CONFIG)
             changed = self._migrate_plaintext_secrets(config) or changed
+            changed = self._migrate_provider_secret_accounts(config) or changed
             if changed or not self.path.exists():
                 self._write(config)
             return config
@@ -152,6 +178,7 @@ class ConfigStore:
         with self._lock:
             config = self.load()
             deep_update(config, patch)
+            pending_secrets = {}
             for section_name, secret in (
                 ("asr", asr_secret),
                 ("llm", llm_secret),
@@ -163,14 +190,22 @@ class ConfigStore:
                         "keychain_account", f"{section_name}-api-key"
                     )
                 )
-                self.secret_store.set(account, secret)
+                cleaned = secret.strip()
+                if account in pending_secrets and pending_secrets[account] != cleaned:
+                    raise ValueError("同一服务商的 API Key 必须保持一致")
+                pending_secrets[account] = cleaned
                 config[section_name]["api_key"] = ""
+            for account, secret in pending_secrets.items():
+                self.secret_store.set(account, secret)
             self._write(config)
             return config
 
     def secret_for(self, section_name: str, config: Mapping | None = None) -> str:
         config = config or self.load()
-        return configured_api_key(config.get(section_name, {}))
+        return configured_api_key(
+            config.get(section_name, {}),
+            secret_store=self.secret_store,
+        )
 
     def _migrate_plaintext_secrets(self, config: MutableMapping) -> bool:
         changed = False
@@ -190,6 +225,34 @@ class ConfigStore:
                 # Preserve the old credential if private storage is unavailable.
                 continue
             section["api_key"] = ""
+            changed = True
+        return changed
+
+    def _migrate_provider_secret_accounts(
+        self, config: MutableMapping
+    ) -> bool:
+        """Move legacy ASR/LLM slots into provider-specific credential slots."""
+        changed = False
+        for section_name in ("asr", "llm"):
+            section = config.get(section_name)
+            if not isinstance(section, MutableMapping):
+                continue
+            legacy_account = f"{section_name}-api-key"
+            current_account = str(
+                section.get("keychain_account", legacy_account) or ""
+            ).strip()
+            if current_account != legacy_account:
+                continue
+            provider = str(section.get("provider", "") or "").strip()
+            provider_account = credential_account_for_provider(provider)
+            try:
+                legacy_secret = self.secret_store.get(legacy_account).strip()
+                provider_secret = self.secret_store.get(provider_account).strip()
+                if legacy_secret and not provider_secret:
+                    self.secret_store.set(provider_account, legacy_secret)
+            except Exception:
+                continue
+            section["keychain_account"] = provider_account
             changed = True
         return changed
 
@@ -373,7 +436,7 @@ def panel_origin_for_caret(
     return x, y
 
 
-def configured_api_key(section: Mapping) -> str:
+def configured_api_key(section: Mapping, secret_store=None) -> str:
     env_name = str(section.get("api_key_env", "") or "").strip()
     if env_name:
         value = os.environ.get(env_name, "").strip()
@@ -382,9 +445,11 @@ def configured_api_key(section: Mapping) -> str:
     account = str(section.get("keychain_account", "") or "").strip()
     if account:
         try:
-            from credential_store import get_secret_store
+            if secret_store is None:
+                from credential_store import get_secret_store
 
-            value = get_secret_store().get(account).strip()
+                secret_store = get_secret_store()
+            value = secret_store.get(account).strip()
             if value:
                 return value
         except Exception:
@@ -463,7 +528,7 @@ class Recorder:
 
 
 class SpeechPipeline:
-    """ASR plus streamed LLM cleanup using OpenAI-compatible endpoints."""
+    """ASR plus streamed LLM cleanup using compatible model endpoints."""
 
     def __init__(self, config: Mapping[str, object]):
         from openai import OpenAI
@@ -597,6 +662,9 @@ class SpeechPipeline:
         wav_path: Path,
         on_partial: Callable[[str], None] | None = None,
     ) -> str:
+        if self._uses_qwen_chat_asr():
+            return self._transcribe_qwen_single(wav_path, on_partial)
+
         if on_partial:
             pieces = ""
             try:
@@ -637,6 +705,77 @@ class SpeechPipeline:
                 file=handle,
             )
         result = str(getattr(response, "text", "") or "").strip()
+        if on_partial and result:
+            on_partial(result)
+        return result if is_meaningful_transcript(result) else ""
+
+    def _uses_qwen_chat_asr(self) -> bool:
+        provider = str(self.asr_config.get("provider", "")).strip().lower()
+        model = str(self.asr_config.get("model", "")).strip().lower()
+        return provider == "qwen" or model.startswith("qwen3-asr-")
+
+    def _qwen_asr_request(self, wav_path: Path) -> dict:
+        encoded = base64.b64encode(wav_path.read_bytes()).decode("ascii")
+        return {
+            "model": str(self.asr_config["model"]),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": f"data:audio/wav;base64,{encoded}"
+                            },
+                        }
+                    ],
+                }
+            ],
+            "extra_body": {"asr_options": {"enable_itn": True}},
+        }
+
+    def _transcribe_qwen_single(
+        self,
+        wav_path: Path,
+        on_partial: Callable[[str], None] | None = None,
+    ) -> str:
+        request = self._qwen_asr_request(wav_path)
+        if on_partial:
+            pieces = ""
+            try:
+                stream = self.asr_client.chat.completions.create(
+                    **request,
+                    stream=True,
+                )
+                for chunk in stream:
+                    choices = getattr(chunk, "choices", None) or []
+                    if not choices:
+                        continue
+                    delta = getattr(choices[0], "delta", None)
+                    text = str(getattr(delta, "content", "") or "")
+                    if not text:
+                        continue
+                    pieces += text
+                    if is_meaningful_transcript(pieces):
+                        on_partial(pieces)
+                result = pieces.strip()
+                if is_meaningful_transcript(result):
+                    return result
+            except Exception:
+                print(
+                    "[转写] Qwen 流式响应不可用，回退到普通响应",
+                    flush=True,
+                )
+
+        response = self.asr_client.chat.completions.create(
+            **request,
+            stream=False,
+        )
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        result = str(getattr(message, "content", "") or "").strip()
         if on_partial and result:
             on_partial(result)
         return result if is_meaningful_transcript(result) else ""

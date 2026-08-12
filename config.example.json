@@ -1,22 +1,22 @@
 {
   "hotkey": "<alt_r>",
   "asr": {
-    "provider": "智谱 GLM-ASR",
-    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+    "provider": "Qwen",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "api_key": "",
     "api_key_env": "VOICE_INPUT_ASR_API_KEY",
-    "keychain_account": "asr-api-key",
-    "model": "glm-asr-2512",
-    "max_file_seconds": 29,
-    "chunk_seconds": 28
+    "keychain_account": "qwen-api-key",
+    "model": "qwen3-asr-flash",
+    "max_file_seconds": 300,
+    "chunk_seconds": 270
   },
   "llm": {
-    "provider": "DeepSeek",
-    "base_url": "https://api.deepseek.com",
+    "provider": "Qwen",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "api_key": "",
     "api_key_env": "VOICE_INPUT_LLM_API_KEY",
-    "keychain_account": "llm-api-key",
-    "model": "deepseek-chat",
+    "keychain_account": "qwen-api-key",
+    "model": "qwen-plus",
     "stream": true,
     "temperature": 0.2
   },
