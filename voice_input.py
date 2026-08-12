@@ -71,7 +71,30 @@ def concise_error_message(error: Exception) -> str:
         return "音频编码组件加载失败，请更新应用"
     if "libportaudio" in lowered or "_sounddevice_data" in lowered:
         return "录音组件加载失败，请更新应用"
+    if (
+        "余额不足" in message
+        or "无可用资源包" in message
+        or "1113" in message
+    ):
+        return "语音识别服务额度不足，请检查服务账户或更换模型服务"
     return message
+
+
+def preview_error_is_fatal(error: Exception) -> bool:
+    """Stop realtime API polling when retrying cannot recover the service."""
+    message = str(error).lower()
+    permanent_markers = (
+        "余额不足",
+        "无可用资源包",
+        "insufficient_quota",
+        "invalid api key",
+        "authentication",
+        "unauthorized",
+        "forbidden",
+        "code 1113",
+        '"code":1113',
+    )
+    return any(marker in message for marker in permanent_markers)
 
 
 def configure_ssl_certificate() -> Path | None:
@@ -725,6 +748,14 @@ def make_app():
             self.status_item = rumps.MenuItem(
                 f"状态: 就绪（按{self.hotkey_name}开始）"
             )
+            self.start_recording_item = rumps.MenuItem(
+                "开始录音",
+                callback=self.start_recording_from_menu,
+            )
+            self.stop_recording_item = rumps.MenuItem(
+                "停止录音并处理",
+                callback=self.stop_recording_from_menu,
+            )
             self.lang_items = {
                 "auto": rumps.MenuItem(
                     "自动检测页面语言",
@@ -741,6 +772,9 @@ def make_app():
             }
             self.menu = [
                 self.status_item,
+                None,
+                self.start_recording_item,
+                self.stop_recording_item,
                 None,
                 rumps.MenuItem("显示面板", callback=self.show_panel),
                 rumps.MenuItem("复制上次结果", callback=self.copy_latest_result),
@@ -837,23 +871,50 @@ def make_app():
                 return
             self.last_hotkey_at = now
             print(f"[热键] {self.hotkey_name}", flush=True)
-            action = None
             with self.phase_lock:
-                if self.phase == Phase.IDLE:
-                    self.phase = Phase.STARTING
-                    action = "start"
-                elif self.phase == Phase.RECORDING:
+                phase = self.phase
+                if phase == Phase.RECORDING:
                     if self.session is not None:
                         self.session.writeback_requested = bool(
                             self.config.get("auto_paste", True)
                         )
-                    action = "finish"
-            if action == "start":
-                self._begin_recording()
-            elif action == "finish":
+            if phase == Phase.IDLE:
+                self._request_start("右 Option")
+            elif phase == Phase.RECORDING:
                 self._request_finish("右 Option")
             else:
                 self._set_ui(status="仍在处理中；按 Esc 可取消")
+
+        def start_recording_from_menu(self, _sender=None) -> None:
+            if not self._request_start("菜单按钮"):
+                self._set_ui(status="当前任务尚未结束；请稍候或按 Esc 取消")
+
+        def stop_recording_from_menu(self, _sender=None) -> None:
+            with self.phase_lock:
+                if self.phase == Phase.RECORDING and self.session is not None:
+                    self.session.writeback_requested = bool(
+                        self.config.get("auto_paste", True)
+                    )
+            if not self._request_finish("菜单按钮"):
+                with self.phase_lock:
+                    phase = self.phase
+                if phase == Phase.IDLE:
+                    self._set_ui(status="当前没有正在录音")
+                else:
+                    self._set_ui(status="正在处理；完成后会自动写入")
+
+        def _request_start(self, trigger: str) -> bool:
+            with self.phase_lock:
+                if self.phase != Phase.IDLE:
+                    return False
+                self.phase = Phase.STARTING
+            print(f"[录音] {trigger} 请求开始", flush=True)
+            try:
+                self._begin_recording()
+            except Exception as error:
+                traceback.print_exc()
+                self._notify_error("无法开始录音", error)
+            return True
 
         def on_confirm_button(self) -> bool:
             return self._confirm_or_paste("写入按钮")
@@ -999,7 +1060,6 @@ def make_app():
             return False
 
         def _begin_recording(self) -> None:
-            print("[录音] 请求开始", flush=True)
             frontmost_pid = frontmost_application_pid()
             captured_context = capture_input_context()
             if (
@@ -1108,6 +1168,10 @@ def make_app():
                 0.4,
                 float(preview_config.get("minimum_seconds", 0.8)),
             )
+            max_failures = max(
+                1,
+                int(preview_config.get("max_consecutive_failures", 2)),
+            )
             if session.preview_stop.wait(first_update):
                 return
             try:
@@ -1116,6 +1180,7 @@ def make_app():
                 print(f"[实时预览] 初始化失败：{error}", flush=True)
                 return
 
+            consecutive_failures = 0
             while self._preview_active(session):
                 temp_file = tempfile.NamedTemporaryFile(
                     suffix=".wav",
@@ -1174,9 +1239,24 @@ def make_app():
                                     raw=raw,
                                     result=polished,
                                 )
+                        consecutive_failures = 0
                 except Exception as error:
                     if self._preview_active(session):
                         print(f"[实时预览] 暂时不可用：{error}", flush=True)
+                        consecutive_failures += 1
+                        if preview_error_is_fatal(error):
+                            consecutive_failures = max_failures
+                        if consecutive_failures >= max_failures:
+                            print(
+                                "[实时预览] 连续失败，已暂停预览；"
+                                "最终处理仍会在停止录音后运行",
+                                flush=True,
+                            )
+                            self._set_preview_ui(
+                                session,
+                                status="实时预览已暂停 · 录音仍在继续",
+                            )
+                            break
                 finally:
                     try:
                         wav_path.unlink(missing_ok=True)
@@ -1301,6 +1381,22 @@ def make_app():
                 return
             if phase == Phase.RECORDING:
                 elapsed = int(time.monotonic() - session.started_at)
+                max_seconds = max(
+                    30,
+                    int(
+                        self.config.get("recording", {}).get(
+                            "max_seconds", 600
+                        )
+                    ),
+                )
+                if elapsed >= max_seconds:
+                    with self.phase_lock:
+                        if self.session is session:
+                            session.writeback_requested = bool(
+                                self.config.get("auto_paste", True)
+                            )
+                    self._request_finish("达到最长录音时间")
+                    return
                 if elapsed != self.last_elapsed_second:
                     self.last_elapsed_second = elapsed
                     self._set_ui(

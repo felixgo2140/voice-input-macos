@@ -44,6 +44,7 @@ class ConfigTests(unittest.TestCase):
     def test_creates_default_config(self):
         config = self.store.load()
         self.assertEqual(config["output"]["mode"], "auto")
+        self.assertEqual(config["recording"]["max_seconds"], 600)
         self.assertTrue(self.path.exists())
 
     def test_config_file_is_private(self):

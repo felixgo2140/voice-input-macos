@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.6 — 2026-08-12
+
+- Adds explicit “Start recording” and “Stop recording and process” menu items.
+- Keeps recording available when a packaged Accessibility constant or optional
+  caret position cannot be read.
+- Resets the recording phase after unexpected start-up errors so Right Option
+  cannot become stuck.
+- Stops realtime preview after repeated or permanent service errors and limits
+  a recording to ten minutes by default.
+- Shows a concise message for speech-service quota errors.
+
 ## 1.3.5 — 2026-07-30
 
 - Keeps soundfile's bundled libsndfile dynamic library outside the Python ZIP
