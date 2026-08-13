@@ -3,6 +3,8 @@
   "asr": {
     "provider": "Qwen 百炼",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "realtime_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    "realtime_model": "paraformer-realtime-v2",
     "api_key": "",
     "api_key_env": "VOICE_INPUT_ASR_API_KEY",
     "keychain_account": "qwen-bailian-api-key",
@@ -11,12 +13,12 @@
     "chunk_seconds": 270
   },
   "llm": {
-    "provider": "Qwen 3.8 Coding Plan",
-    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "provider": "Qwen 百炼",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "api_key": "",
     "api_key_env": "VOICE_INPUT_LLM_API_KEY",
-    "keychain_account": "qwen-coding-api-key",
-    "model": "qwen3.8-max",
+    "keychain_account": "qwen-bailian-api-key",
+    "model": "qwen-plus",
     "stream": true,
     "temperature": 0.2
   },

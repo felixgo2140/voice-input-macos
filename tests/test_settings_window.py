@@ -25,10 +25,10 @@ class ServiceChoicesTests(unittest.TestCase):
         )
         self.assertEqual(
             SERVICE_CATALOG["llm"][0]["provider"],
-            "Qwen 3.8 Coding Plan",
+            "Qwen 百炼",
         )
         self.assertEqual(
-            SERVICE_CATALOG["llm"][0]["models"][0], "qwen3.8-max"
+            SERVICE_CATALOG["llm"][0]["models"][0], "qwen-plus"
         )
 
     def test_kimi_is_available_for_cleanup(self):

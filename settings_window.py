@@ -40,19 +40,19 @@ SERVICE_CATALOG = {
     ),
     "llm": (
         {
-            "provider": "Qwen 3.8 Coding Plan",
-            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-            "temperature": 0.2,
-            "models": (
-                "qwen3.8-max",
-            ),
-        },
-        {
             "provider": "Qwen 百炼",
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "temperature": 0.2,
             "models": (
                 "qwen-plus",
+                "qwen3.8-max",
+            ),
+        },
+        {
+            "provider": "Qwen 3.8 Coding Plan",
+            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "temperature": 0.2,
+            "models": (
                 "qwen3.8-max",
             ),
         },

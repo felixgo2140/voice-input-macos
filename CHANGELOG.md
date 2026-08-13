@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.0 — 2026-08-12
+
+- Streams microphone frames to low-latency DashScope ASR while recording,
+  instead of repeatedly uploading the complete WAV file.
+- Falls back to Qwen `qwen3-asr-flash` automatically if the realtime stream
+  is unavailable.
+- Uses Qwen Model Studio `qwen-plus` with non-reasoning mode for substantially
+  faster cleanup and translation; Qwen 3.8 and Kimi remain selectable.
+- Makes the Write button finish an active recording, request writeback during
+  processing, and retry the last result after automatic writeback.
+- Preserves completed transcript segments across natural speaking pauses and
+  supports 16 kHz and resampled device input.
+- Adds packaged realtime pipeline diagnostics and end-to-end latency logging.
+
 ## 1.3.7 — 2026-08-12
 
 - Makes Qwen Model Studio `qwen3-asr-flash` the default speech recognition

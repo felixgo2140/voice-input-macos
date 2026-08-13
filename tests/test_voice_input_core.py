@@ -11,12 +11,15 @@ from voice_input_core import (
     ScreenBounds,
     SpeechPipeline,
     credential_account_for_provider,
+    create_realtime_transcriber,
     deep_fill_missing,
     detect_language_from_texts,
+    float_audio_to_pcm16,
     is_meaningful_transcript,
     join_transcript_parts,
     normalize_output_mode,
     panel_origin_for_caret,
+    qwen_realtime_websocket_url,
     resolve_output_language,
     sanitize_model_output,
 )
@@ -48,7 +51,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["output"]["mode"], "auto")
         self.assertEqual(config["asr"]["provider"], "Qwen 百炼")
         self.assertEqual(config["asr"]["model"], "qwen3-asr-flash")
-        self.assertEqual(config["llm"]["model"], "qwen3.8-max")
+        self.assertEqual(config["llm"]["model"], "qwen-plus")
         self.assertEqual(
             config["asr"]["keychain_account"], "qwen-bailian-api-key"
         )
@@ -331,6 +334,85 @@ class QwenTranscriptionTests(unittest.TestCase):
         self.assertEqual(result, "你好")
         self.assertEqual(partials[-1], "你好")
         self.assertTrue(completions.calls[0]["stream"])
+
+
+class QwenRealtimeTests(unittest.TestCase):
+    def test_builds_realtime_url_from_regular_qwen_endpoint(self):
+        self.assertEqual(
+            qwen_realtime_websocket_url(
+                {
+                    "base_url": (
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                    ),
+                    "realtime_model": "qwen3-asr-flash-realtime",
+                }
+            ),
+            (
+                "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+                "?model=qwen3-asr-flash-realtime"
+            ),
+        )
+
+    def test_pcm_conversion_resamples_48khz_to_16khz(self):
+        import numpy as np
+
+        audio = np.array([[-1.0], [0.0], [1.0]] * 4, dtype=np.float32)
+        pcm = float_audio_to_pcm16(audio, 48_000)
+        self.assertEqual(len(pcm), 8)
+
+    @patch("voice_input_core.configured_api_key", return_value="test-key")
+    def test_paraformer_selects_low_latency_protocol(self, _configured_key):
+        from voice_input_core import DashScopeRealtimeTranscriber
+
+        transcriber = create_realtime_transcriber(
+            {
+                "base_url": (
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                "realtime_model": "paraformer-realtime-v2",
+            }
+        )
+        self.assertIsInstance(transcriber, DashScopeRealtimeTranscriber)
+        self.assertEqual(
+            transcriber.url,
+            "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        )
+
+    def test_paraformer_keeps_text_across_sentence_boundaries(self):
+        from voice_input_core import DashScopeRealtimeTranscriber
+
+        partials = []
+        transcriber = DashScopeRealtimeTranscriber.__new__(
+            DashScopeRealtimeTranscriber
+        )
+        transcriber.completed_parts = []
+        transcriber.current_partial = ""
+        transcriber.latest_text = ""
+        transcriber.final_text = ""
+        transcriber.on_partial = partials.append
+
+        def result(text, sentence_end):
+            transcriber._on_message(
+                None,
+                json.dumps(
+                    {
+                        "header": {"event": "result-generated"},
+                        "payload": {
+                            "output": {
+                                "sentence": {
+                                    "text": text,
+                                    "sentence_end": sentence_end,
+                                }
+                            }
+                        },
+                    }
+                ),
+            )
+
+        result("第一句。", True)
+        result("第二句", False)
+        self.assertEqual(partials[-1], "第一句。第二句")
+        self.assertEqual(transcriber.final_text, "第一句。")
 
 
 class PolishStreamTests(unittest.TestCase):
