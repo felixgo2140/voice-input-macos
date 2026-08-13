@@ -25,11 +25,13 @@ from macos_context import (
 )
 from voice_input_core import (
     ConfigStore,
+    QwenRealtimeTranscriber,
     Recorder,
     ScreenBounds,
     SpeechPipeline,
     configured_api_key,
     copy_text,
+    create_realtime_transcriber,
     humanize_hotkey,
     panel_origin_for_caret,
     paste_text,
@@ -618,6 +620,7 @@ class VoiceSession:
     preview_raw: str = ""
     preview_result: str = ""
     writeback_requested: bool = False
+    realtime_transcriber: QwenRealtimeTranscriber | None = None
 
 
 def right_option_transition(
@@ -923,21 +926,27 @@ def make_app():
             action = None
             with self.phase_lock:
                 if self.phase == Phase.RECORDING and self.session is not None:
-                    action = "recording"
+                    self.session.writeback_requested = True
+                    action = "finish"
                 elif self.phase in (Phase.STARTING, Phase.PROCESSING):
+                    if self.session is not None:
+                        self.session.writeback_requested = True
                     action = "processing"
                 elif (
                     self.phase == Phase.IDLE
                     and self.latest_result
-                    and self.latest_context is not None
                 ):
-                    self.phase = Phase.PASTING
-                    action = "paste"
-            if action == "recording":
-                self._set_ui(status="请先按右 Option 结束录音", icon="🔴")
-                return True
+                    context = self.latest_context or self.last_external_context
+                    if context is not None:
+                        self.latest_context = context
+                        self.phase = Phase.PASTING
+                        action = "paste"
+                    else:
+                        action = "copy"
+            if action == "finish":
+                return self._request_finish(trigger)
             if action == "processing":
-                self._set_ui(status="正在生成最终结果，请稍候…", icon="⏳")
+                self._set_ui(status="处理完成后会立即写入…", icon="⏳")
                 return True
             if action == "paste":
                 self._set_ui(status="正在返回原输入框并粘贴…", icon="⏳")
@@ -950,6 +959,11 @@ def make_app():
                     lambda: self._paste_latest_result(trigger),
                 )
                 return True
+            if action == "copy":
+                copy_text(self.latest_result)
+                self._set_ui(status="未找到原输入框；结果已复制", icon="⚠️")
+                return True
+            self._set_ui(status="还没有可写入的结果")
             return False
 
         def _paste_latest_result(self, trigger: str) -> None:
@@ -979,12 +993,6 @@ def make_app():
                 text,
                 bool(self.config.get("restore_clipboard", True)),
             )
-            with self.phase_lock:
-                # A failed automatic writeback remains available for an
-                # explicit retry via the 写入 button.
-                if pasted and self.latest_result == text:
-                    self.latest_result = ""
-                    self.latest_context = None
             if pasted:
                 self._set_ui(
                     status=f"已粘贴到原输入框 · {language}",
@@ -1020,15 +1028,18 @@ def make_app():
         def on_escape(self) -> bool:
             print("[热键] Esc", flush=True)
             action = None
+            session = None
             with self.phase_lock:
                 if self.phase == Phase.RECORDING:
                     self.phase = Phase.CANCELLING
                     if self.session is not None:
+                        session = self.session
                         self.session.preview_stop.set()
                     action = "discard"
                 elif self.phase in (Phase.STARTING, Phase.PROCESSING):
                     self.phase = Phase.CANCELLING
                     if self.session is not None:
+                        session = self.session
                         self.session.cancel_event.set()
                         self.session.preview_stop.set()
                     action = "cancel"
@@ -1038,7 +1049,10 @@ def make_app():
                     action = "clear_result"
             if action == "discard":
                 try:
+                    self.recorder.set_audio_listener(None)
                     self.recorder.stop()
+                    if session and session.realtime_transcriber is not None:
+                        session.realtime_transcriber.abort()
                 except Exception:
                     traceback.print_exc()
                 with self.phase_lock:
@@ -1047,6 +1061,8 @@ def make_app():
                 self._set_ui(status="已取消", icon="🎙")
                 return True
             elif action == "cancel":
+                if session and session.realtime_transcriber is not None:
+                    session.realtime_transcriber.abort()
                 self._set_ui(status="正在取消…", icon="🎙")
                 return True
             elif action == "clear_result":
@@ -1090,9 +1106,51 @@ def make_app():
                 target_language=target,
                 started_at=time.monotonic(),
             )
+            preview_config = self.config.get("realtime_preview", {})
+            realtime_enabled = bool(preview_config.get("enabled", True))
+            asr_config = self.config.get("asr", {})
+            if realtime_enabled and QwenRealtimeTranscriber.supports(asr_config):
+                try:
+                    def on_realtime_partial(partial: str) -> None:
+                        if not partial:
+                            return
+                        session.preview_raw = partial
+                        update = {
+                            "status": "实时识别中…",
+                            "raw": partial,
+                        }
+                        if session.target_language == "中文":
+                            update["result"] = partial
+                        self._set_preview_ui(session, **update)
+
+                    timeout = float(
+                        self.config.get("network", {}).get(
+                            "timeout_seconds", 45
+                        )
+                    )
+                    session.realtime_transcriber = create_realtime_transcriber(
+                        asr_config,
+                        on_partial=on_realtime_partial,
+                        connect_timeout=min(8.0, timeout),
+                    )
+                    self.recorder.set_audio_listener(
+                        session.realtime_transcriber.feed_audio
+                    )
+                    session.realtime_transcriber.start()
+                    print("[实时识别] Qwen WebSocket 已在后台连接", flush=True)
+                except Exception as error:
+                    self.recorder.set_audio_listener(None)
+                    session.realtime_transcriber = None
+                    print(
+                        f"[实时识别] 初始化失败，改用录音文件识别：{error}",
+                        flush=True,
+                    )
             try:
                 self.recorder.start()
             except Exception as error:
+                self.recorder.set_audio_listener(None)
+                if session.realtime_transcriber is not None:
+                    session.realtime_transcriber.abort()
                 with self.phase_lock:
                     self.phase = Phase.IDLE
                 self._notify_error("无法开始录音", error)
@@ -1100,7 +1158,10 @@ def make_app():
             print("[录音] 已开始", flush=True)
             with self.phase_lock:
                 if self.phase == Phase.CANCELLING:
+                    self.recorder.set_audio_listener(None)
                     self.recorder.stop()
+                    if session.realtime_transcriber is not None:
+                        session.realtime_transcriber.abort()
                     self.phase = Phase.IDLE
                     self.session = None
                     self._set_ui(status="已取消", icon="🎙")
@@ -1120,8 +1181,10 @@ def make_app():
                 raw="",
                 result="",
             )
-            preview_config = self.config.get("realtime_preview", {})
-            if bool(preview_config.get("enabled", True)):
+            if (
+                realtime_enabled
+                and session.realtime_transcriber is None
+            ):
                 threading.Thread(
                     target=self._run_realtime_preview,
                     args=(session,),
@@ -1283,6 +1346,7 @@ def make_app():
             try:
                 session.preview_stop.set()
                 duration = self.recorder.stop(wav_path)
+                self.recorder.set_audio_listener(None)
                 print(f"[录音] 已停止，时长 {duration:.1f}s", flush=True)
                 if self._cancelled(session):
                     return
@@ -1290,16 +1354,36 @@ def make_app():
                     self._set_ui(status="录音太短，已忽略", icon="🎙")
                     return
 
-                self._set_ui(status="正在识别语音…", icon="⏳")
+                self._set_ui(status="正在收尾实时识别…", icon="⏳")
 
                 def on_raw_partial(partial: str) -> None:
                     if not self._cancelled(session):
                         self._set_ui(raw=partial)
 
-                raw = self._pipeline().transcribe(
-                    wav_path,
-                    on_partial=on_raw_partial,
-                )
+                raw = ""
+                transcriber = session.realtime_transcriber
+                if transcriber is not None:
+                    realtime_started = time.monotonic()
+                    raw = transcriber.finish(timeout=3.0)
+                    realtime_elapsed = time.monotonic() - realtime_started
+                    if raw:
+                        print(
+                            f"[性能] 实时识别收尾 {realtime_elapsed:.2f}s",
+                            flush=True,
+                        )
+                    else:
+                        error = transcriber.error
+                        print(
+                            "[实时识别] 最终结果不可用，改用完整录音："
+                            f"{error or '空结果'}",
+                            flush=True,
+                        )
+                if not raw:
+                    self._set_ui(status="实时识别回退，正在读取录音…")
+                    raw = self._pipeline().transcribe(
+                        wav_path,
+                        on_partial=on_raw_partial,
+                    )
                 if self._cancelled(session):
                     return
                 if not raw:
@@ -1315,10 +1399,15 @@ def make_app():
                     if not self._cancelled(session):
                         self._set_ui(result=partial)
 
+                polish_started = time.monotonic()
                 polished = self._pipeline().polish(
                     raw,
                     session.target_language,
                     on_partial=on_partial,
+                )
+                print(
+                    f"[性能] 云端整理 {time.monotonic() - polish_started:.2f}s",
+                    flush=True,
                 )
                 if self._cancelled(session):
                     return
@@ -1370,6 +1459,8 @@ def make_app():
             with self.phase_lock:
                 if self.session is not None:
                     self.session.preview_stop.set()
+                    if self.session.realtime_transcriber is not None:
+                        self.session.realtime_transcriber.abort()
                 self.phase = Phase.IDLE
                 self.session = None
 
@@ -1476,9 +1567,13 @@ def make_app():
 
         def quit_app(self, _sender=None) -> None:
             with self.phase_lock:
+                session = self.session
                 if self.session is not None:
                     self.session.cancel_event.set()
                     self.session.preview_stop.set()
+            self.recorder.set_audio_listener(None)
+            if session is not None and session.realtime_transcriber is not None:
+                session.realtime_transcriber.abort()
             if self.recorder.recording:
                 try:
                     self.recorder.stop()
@@ -1804,6 +1899,65 @@ def run_pipeline_smoke_test(wav_path: Path) -> int:
         return 1
 
 
+def run_realtime_pipeline_smoke_test(wav_path: Path) -> int:
+    """Exercise the packaged realtime ASR and fast cloud cleanup path."""
+    transcriber = None
+    try:
+        import soundfile as sf
+
+        if not wav_path.is_file():
+            raise FileNotFoundError(f"测试音频不存在：{wav_path}")
+        config = CONFIG_STORE.load()
+        partials = []
+        transcriber = create_realtime_transcriber(
+            config["asr"],
+            partials.append,
+        )
+        transcriber.start()
+        audio, sample_rate = sf.read(
+            str(wav_path),
+            dtype="float32",
+            always_2d=True,
+        )
+        chunk_frames = max(1, int(sample_rate * 0.1))
+        for offset in range(0, len(audio), chunk_frames):
+            transcriber.feed_audio(
+                audio[offset : offset + chunk_frames],
+                sample_rate,
+            )
+            time.sleep(0.1)
+        stopped_at = time.monotonic()
+        raw = transcriber.finish(timeout=3.0)
+        asr_elapsed = time.monotonic() - stopped_at
+        if not raw:
+            raise RuntimeError(
+                f"实时语音识别返回空文本：{transcriber.error or '未知错误'}"
+            )
+        cleanup_started = time.monotonic()
+        result = SpeechPipeline(config).polish(raw, "English")
+        cleanup_elapsed = time.monotonic() - cleanup_started
+        if not result:
+            raise RuntimeError("文字整理返回空文本")
+        print(
+            "REALTIME_PIPELINE_SMOKE_OK "
+            f"partials={len(partials)} raw_chars={len(raw)} "
+            f"result_chars={len(result)} asr_post_stop={asr_elapsed:.2f}s "
+            f"cleanup={cleanup_elapsed:.2f}s",
+            flush=True,
+        )
+        return 0
+    except Exception as error:
+        print(
+            f"REALTIME_PIPELINE_SMOKE_FAILED {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    finally:
+        if transcriber is not None:
+            transcriber.abort()
+
+
 def run_panel_preview(config: dict) -> None:
     import rumps
 
@@ -1859,6 +2013,18 @@ def run_settings_preview() -> None:
 
 
 def main() -> int:
+    if "--realtime-pipeline-smoke-test" in sys.argv:
+        option_index = sys.argv.index("--realtime-pipeline-smoke-test")
+        if option_index + 1 >= len(sys.argv):
+            print(
+                "REALTIME_PIPELINE_SMOKE_FAILED 缺少 WAV 文件路径",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 2
+        return run_realtime_pipeline_smoke_test(
+            Path(sys.argv[option_index + 1])
+        )
     if "--pipeline-smoke-test" in sys.argv:
         option_index = sys.argv.index("--pipeline-smoke-test")
         if option_index + 1 >= len(sys.argv):

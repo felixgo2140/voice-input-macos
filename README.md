@@ -15,7 +15,7 @@
 
 - ASR 与 LLM 服务商、模型使用联动下拉选择，服务地址自动配置
 - 中文、English 或根据当前网页/输入框自动判断
-- 录音期间显示转写与整理预览
+- 录音时通过实时音频流显示转写，停止后不再重复上传整段录音
 - 菜单提供独立的开始和停止按钮；单次录音默认最长 10 分钟
 - 完成后自动回贴，不依赖浮窗是否处于 active 状态
 - 浮窗跟随光标，并兼容多显示器坐标
@@ -33,11 +33,11 @@
 
 默认使用：
 
-- ASR：Qwen 百炼 `qwen3-asr-flash`
-- LLM：Qwen Coding Plan `qwen3.8-max`
+- ASR：Qwen 百炼 `paraformer-realtime-v2`（失败时自动回退到 `qwen3-asr-flash`）
+- LLM：Qwen 百炼 `qwen-plus`
 
-Qwen 3.8 Coding Plan 与普通百炼使用不同的端点和 API Key，因此分别保存为
-独立凭据。若希望只使用一把百炼 Key，可在文字整理下拉框选择 `Qwen 百炼 / qwen-plus`。
+默认识别与整理共用一把 Qwen 百炼 Key。Qwen 3.8 Coding Plan 与普通百炼使用
+不同的端点和 API Key，因此在设置中仍作为独立选项保存。
 文字整理也可选择 `Kimi Coding Plan / k3`；程序会自动使用该模型要求的
 `temperature=1`。Codex 登录使用的 OAuth 凭据不会被读取或复用。
 
@@ -65,7 +65,7 @@ cd voice-input-macos
 
 ```bash
 ./build-app.sh
-./package-release.sh 1.3.7
+./package-release.sh 1.4.0
 ```
 
 如果拥有 Apple Developer ID：

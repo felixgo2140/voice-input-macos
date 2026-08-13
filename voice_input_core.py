@@ -6,14 +6,18 @@ import base64
 import json
 import hashlib
 import os
+import queue
 import re
+import ssl
 import tempfile
 import threading
 import time
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, MutableMapping, Sequence
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 DEFAULT_CONFIG = {
@@ -21,6 +25,8 @@ DEFAULT_CONFIG = {
     "asr": {
         "provider": "Qwen 百炼",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "realtime_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        "realtime_model": "paraformer-realtime-v2",
         "api_key": "",
         "api_key_env": "VOICE_INPUT_ASR_API_KEY",
         "keychain_account": "qwen-bailian-api-key",
@@ -29,12 +35,12 @@ DEFAULT_CONFIG = {
         "chunk_seconds": 270,
     },
     "llm": {
-        "provider": "Qwen 3.8 Coding Plan",
-        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "provider": "Qwen 百炼",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": "",
         "api_key_env": "VOICE_INPUT_LLM_API_KEY",
-        "keychain_account": "qwen-coding-api-key",
-        "model": "qwen3.8-max",
+        "keychain_account": "qwen-bailian-api-key",
+        "model": "qwen-plus",
         "stream": True,
         "temperature": 0.2,
     },
@@ -460,6 +466,498 @@ def configured_api_key(section: Mapping, secret_store=None) -> str:
     return str(section.get("api_key", "") or "").strip()
 
 
+def qwen_realtime_websocket_url(asr_config: Mapping) -> str:
+    """Build the matching Qwen realtime endpoint from the saved HTTP one."""
+    configured = str(asr_config.get("realtime_url", "") or "").strip()
+    source = configured or str(asr_config.get("base_url", "") or "").strip()
+    parsed = urlparse(source)
+    if not parsed.hostname:
+        raise ValueError("Qwen 实时识别地址无效")
+    scheme = "wss" if parsed.scheme in {"http", "https", "ws", "wss"} else "wss"
+    model = str(
+        asr_config.get("realtime_model", "qwen3-asr-flash-realtime")
+        or "qwen3-asr-flash-realtime"
+    ).strip()
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["model"] = model
+    return urlunparse(
+        (
+            scheme,
+            parsed.netloc,
+            "/api-ws/v1/realtime",
+            "",
+            urlencode(query),
+            "",
+        )
+    )
+
+
+def float_audio_to_pcm16(audio, source_rate: int, target_rate: int = 16_000) -> bytes:
+    """Convert a mono float callback frame to little-endian PCM16."""
+    import numpy as np
+
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if samples.size == 0:
+        return b""
+    source_rate = int(source_rate)
+    target_rate = int(target_rate)
+    if source_rate <= 0 or target_rate <= 0:
+        raise ValueError("音频采样率必须大于 0")
+    if source_rate != target_rate:
+        ratio = source_rate / float(target_rate)
+        if ratio.is_integer():
+            samples = samples[:: int(ratio)]
+        else:
+            output_size = max(
+                1,
+                int(round(samples.size * target_rate / float(source_rate))),
+            )
+            source_positions = np.arange(samples.size, dtype=np.float64)
+            target_positions = np.linspace(
+                0,
+                max(0, samples.size - 1),
+                output_size,
+                dtype=np.float64,
+            )
+            samples = np.interp(target_positions, source_positions, samples)
+    clipped = np.clip(samples, -1.0, 1.0)
+    return (clipped * 32767.0).astype("<i2").tobytes()
+
+
+class QwenRealtimeTranscriber:
+    """Stream microphone frames to Qwen while recording is still active."""
+
+    def __init__(
+        self,
+        asr_config: Mapping,
+        on_partial: Callable[[str], None] | None = None,
+        connect_timeout: float = 8.0,
+    ):
+        self.asr_config = asr_config
+        self.api_key = configured_api_key(asr_config)
+        if not self.api_key:
+            raise ValueError("尚未配置语音识别 API Key")
+        self.url = qwen_realtime_websocket_url(asr_config)
+        self.on_partial = on_partial
+        self.connect_timeout = max(1.0, float(connect_timeout))
+        self.audio_queue: queue.Queue = queue.Queue(maxsize=1024)
+        self.ready = threading.Event()
+        self.finished = threading.Event()
+        self.final_received = threading.Event()
+        self.sender_finished = threading.Event()
+        self.accepting_audio = True
+        self.latest_text = ""
+        self.final_text = ""
+        self.error: Exception | None = None
+        self.ws = None
+        self.socket_thread: threading.Thread | None = None
+        self.sender_thread: threading.Thread | None = None
+        self._state_lock = threading.RLock()
+
+    @staticmethod
+    def supports(asr_config: Mapping) -> bool:
+        provider = str(asr_config.get("provider", "") or "").lower()
+        model = str(asr_config.get("model", "") or "").lower()
+        return "qwen" in provider or model.startswith("qwen3-asr-")
+
+    def start(self) -> None:
+        if self.socket_thread is not None:
+            return
+        self.socket_thread = threading.Thread(
+            target=self._run_socket,
+            name="voice-input-qwen-realtime",
+            daemon=True,
+        )
+        self.sender_thread = threading.Thread(
+            target=self._send_audio,
+            name="voice-input-qwen-audio",
+            daemon=True,
+        )
+        self.socket_thread.start()
+        self.sender_thread.start()
+
+    def feed_audio(self, audio, sample_rate: int) -> None:
+        if not self.accepting_audio or self.error is not None:
+            return
+        try:
+            self.audio_queue.put_nowait((audio, int(sample_rate)))
+        except queue.Full:
+            self._set_error(RuntimeError("实时识别发送队列已满"))
+            self.accepting_audio = False
+
+    def finish(self, timeout: float = 6.0) -> str:
+        """Drain captured frames, commit once, and return the final transcript."""
+        self.accepting_audio = False
+        self._enqueue_end()
+        deadline = time.monotonic() + max(0.5, float(timeout))
+        self.final_received.wait(max(0.0, deadline - time.monotonic()))
+        if self.final_received.is_set():
+            self.finished.wait(min(0.5, max(0.0, deadline - time.monotonic())))
+        result = self.final_text.strip()
+        if not result and is_meaningful_transcript(self.latest_text):
+            # The server's last text event already contains the complete
+            # rolling transcript. It is a safe low-latency fallback if the
+            # separate completed event is delayed or lost during close.
+            result = self.latest_text.strip()
+        if not result and self.error is None and time.monotonic() >= deadline:
+            self._set_error(TimeoutError("实时识别收尾超时"))
+        if not self.finished.is_set():
+            self._close_socket()
+        return result if is_meaningful_transcript(result) else ""
+
+    def abort(self) -> None:
+        self.accepting_audio = False
+        self._enqueue_end()
+        self._close_socket()
+        self.finished.set()
+
+    def _enqueue_end(self) -> None:
+        try:
+            self.audio_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.audio_queue.put_nowait(None)
+            except queue.Full:
+                pass
+
+    def _run_socket(self) -> None:
+        try:
+            import certifi
+            import websocket
+
+            self.ws = websocket.WebSocketApp(
+                self.url,
+                header=self._headers(),
+                on_open=self._on_open,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close,
+            )
+            self.ws.run_forever(
+                sslopt={
+                    "ca_certs": certifi.where(),
+                    "cert_reqs": ssl.CERT_REQUIRED,
+                }
+            )
+        except Exception as error:
+            self._set_error(error)
+        finally:
+            self.finished.set()
+            self.ready.set()
+
+    def _headers(self) -> list[str]:
+        return [
+            f"Authorization: Bearer {self.api_key}",
+            "OpenAI-Beta: realtime=v1",
+        ]
+
+    def _on_open(self, ws) -> None:
+        self._send_json(
+            {
+                "event_id": f"event_config_{time.time_ns()}",
+                "type": "session.update",
+                "session": {
+                    "modalities": ["text"],
+                    "input_audio_format": "pcm",
+                    "sample_rate": 16_000,
+                    "turn_detection": None,
+                },
+            }
+        )
+
+    def _on_message(self, _ws, message: str) -> None:
+        try:
+            event = json.loads(message)
+        except (TypeError, json.JSONDecodeError):
+            return
+        event_type = str(event.get("type", ""))
+        if event_type == "session.updated":
+            self.ready.set()
+            return
+        if event_type == "conversation.item.input_audio_transcription.text":
+            partial = f"{event.get('text', '')}{event.get('stash', '')}".strip()
+            if is_meaningful_transcript(partial):
+                self.latest_text = partial
+                if self.on_partial:
+                    self.on_partial(partial)
+            return
+        if event_type == "conversation.item.input_audio_transcription.completed":
+            transcript = str(event.get("transcript", "") or "").strip()
+            if is_meaningful_transcript(transcript):
+                self.final_text = transcript
+                self.latest_text = transcript
+                if self.on_partial:
+                    self.on_partial(transcript)
+            self.final_received.set()
+            return
+        if event_type == "session.finished":
+            self.finished.set()
+            self._close_socket()
+            return
+        if event_type == "error":
+            details = event.get("error") or event.get("message") or event
+            self._set_error(RuntimeError(f"Qwen 实时识别失败：{details}"))
+            self.final_received.set()
+            self._close_socket()
+
+    def _on_error(self, _ws, error) -> None:
+        if not self.finished.is_set():
+            self._set_error(
+                error if isinstance(error, Exception) else RuntimeError(str(error))
+            )
+            self.final_received.set()
+
+    def _on_close(self, _ws, _status_code, _message) -> None:
+        if (
+            not self.final_received.is_set()
+            and self.accepting_audio
+            and self.error is None
+        ):
+            self._set_error(RuntimeError("实时识别连接意外关闭"))
+        self.final_received.set()
+        self.finished.set()
+        self.ready.set()
+
+    def _send_audio(self) -> None:
+        if not self.ready.wait(self.connect_timeout):
+            self._set_error(TimeoutError("实时识别连接超时"))
+            self.sender_finished.set()
+            return
+        if self.error is not None or self.finished.is_set():
+            self.sender_finished.set()
+            return
+        try:
+            while True:
+                item = self.audio_queue.get()
+                if item is None:
+                    break
+                audio, sample_rate = item
+                pcm = float_audio_to_pcm16(audio, sample_rate)
+                if not pcm:
+                    continue
+                self._send_json(
+                    {
+                        "event_id": f"event_audio_{time.time_ns()}",
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm).decode("ascii"),
+                    }
+                )
+            if self.error is None and not self.finished.is_set():
+                self._send_json(
+                    {
+                        "event_id": f"event_commit_{time.time_ns()}",
+                        "type": "input_audio_buffer.commit",
+                    }
+                )
+                self._send_json(
+                    {
+                        "event_id": f"event_finish_{time.time_ns()}",
+                        "type": "session.finish",
+                    }
+                )
+        except Exception as error:
+            self._set_error(error)
+            self.final_received.set()
+            self._close_socket()
+        finally:
+            self.sender_finished.set()
+
+    def _send_json(self, payload: Mapping) -> None:
+        ws = self.ws
+        if ws is None or ws.sock is None or not ws.sock.connected:
+            raise RuntimeError("实时识别连接已断开")
+        ws.send(json.dumps(payload, ensure_ascii=False))
+
+    def _set_error(self, error: Exception) -> None:
+        with self._state_lock:
+            if self.error is None:
+                self.error = error
+        self.ready.set()
+
+    def _close_socket(self) -> None:
+        ws = self.ws
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
+class DashScopeRealtimeTranscriber(QwenRealtimeTranscriber):
+    """Low-latency DashScope duplex ASR used for the five-times fast path."""
+
+    def __init__(
+        self,
+        asr_config: Mapping,
+        on_partial: Callable[[str], None] | None = None,
+        connect_timeout: float = 8.0,
+    ):
+        super().__init__(asr_config, on_partial, connect_timeout)
+        self.model = str(
+            asr_config.get("realtime_model", "paraformer-realtime-v2")
+            or "paraformer-realtime-v2"
+        ).strip()
+        parsed = urlparse(
+            str(asr_config.get("realtime_url", "") or "").strip()
+            or str(asr_config.get("base_url", "") or "").strip()
+        )
+        if not parsed.hostname:
+            raise ValueError("DashScope 实时识别地址无效")
+        self.url = urlunparse(
+            ("wss", parsed.netloc, "/api-ws/v1/inference", "", "", "")
+        )
+        self.task_id = uuid.uuid4().hex
+        self.completed_parts: list[str] = []
+        self.current_partial = ""
+
+    def finish(self, timeout: float = 3.0) -> str:
+        self.accepting_audio = False
+        self._enqueue_end()
+        if self.final_text and not self.current_partial:
+            # A short pause has already produced a sentence-end result while
+            # the user was reaching for Option. Only flush the sender queue;
+            # there is no reason to wait for the task-finished round trip.
+            if self.sender_finished.wait(min(0.8, max(0.2, timeout))):
+                self.final_received.wait(0.1)
+                return self.final_text.strip()
+        return super().finish(timeout)
+
+    def _headers(self) -> list[str]:
+        return [f"Authorization: Bearer {self.api_key}"]
+
+    def _on_open(self, _ws) -> None:
+        self._send_json(
+            {
+                "header": {
+                    "action": "run-task",
+                    "task_id": self.task_id,
+                    "streaming": "duplex",
+                },
+                "payload": {
+                    "task_group": "audio",
+                    "task": "asr",
+                    "function": "recognition",
+                    "model": self.model,
+                    "parameters": {
+                        "format": "pcm",
+                        "sample_rate": 16_000,
+                        "semantic_punctuation_enabled": False,
+                        "max_sentence_silence": 200,
+                    },
+                    "input": {},
+                },
+            }
+        )
+
+    def _on_message(self, _ws, message: str) -> None:
+        try:
+            event = json.loads(message)
+        except (TypeError, json.JSONDecodeError):
+            return
+        header = event.get("header", {})
+        event_type = str(header.get("event", ""))
+        if event_type == "task-started":
+            self.ready.set()
+            return
+        if event_type == "result-generated":
+            sentence = (
+                event.get("payload", {})
+                .get("output", {})
+                .get("sentence", {})
+            )
+            partial = str(sentence.get("text", "") or "").strip()
+            if is_meaningful_transcript(partial):
+                combined = join_transcript_parts(
+                    [*self.completed_parts, partial]
+                )
+                self.current_partial = partial
+                self.latest_text = combined
+                if self.on_partial:
+                    self.on_partial(combined)
+                if bool(sentence.get("sentence_end", False)):
+                    self.completed_parts.append(partial)
+                    self.current_partial = ""
+                    self.final_text = join_transcript_parts(
+                        self.completed_parts
+                    )
+            return
+        if event_type == "task-finished":
+            if not self.final_text:
+                self.final_text = self.latest_text
+            self.final_received.set()
+            self.finished.set()
+            self._close_socket()
+            return
+        if event_type == "task-failed":
+            message = header.get("error_message") or header.get("error_code")
+            self._set_error(
+                RuntimeError(f"DashScope 实时识别失败：{message or '未知错误'}")
+            )
+            self.final_received.set()
+            self._close_socket()
+
+    def _send_audio(self) -> None:
+        if not self.ready.wait(self.connect_timeout):
+            self._set_error(TimeoutError("实时识别连接超时"))
+            self.sender_finished.set()
+            return
+        if self.error is not None or self.finished.is_set():
+            self.sender_finished.set()
+            return
+        try:
+            while True:
+                item = self.audio_queue.get()
+                if item is None:
+                    break
+                audio, sample_rate = item
+                pcm = float_audio_to_pcm16(audio, sample_rate)
+                if pcm:
+                    self._send_binary(pcm)
+            if self.error is None and not self.finished.is_set():
+                self._send_json(
+                    {
+                        "header": {
+                            "action": "finish-task",
+                            "task_id": self.task_id,
+                            "streaming": "duplex",
+                        },
+                        "payload": {"input": {}},
+                    }
+                )
+        except Exception as error:
+            self._set_error(error)
+            self.final_received.set()
+            self._close_socket()
+        finally:
+            self.sender_finished.set()
+
+    def _send_binary(self, payload: bytes) -> None:
+        import websocket
+
+        ws = self.ws
+        if ws is None or ws.sock is None or not ws.sock.connected:
+            raise RuntimeError("实时识别连接已断开")
+        ws.send(payload, opcode=websocket.ABNF.OPCODE_BINARY)
+
+
+def create_realtime_transcriber(
+    asr_config: Mapping,
+    on_partial: Callable[[str], None] | None = None,
+    connect_timeout: float = 8.0,
+) -> QwenRealtimeTranscriber:
+    model = str(asr_config.get("realtime_model", "") or "").lower()
+    transcriber_class = (
+        DashScopeRealtimeTranscriber
+        if model.startswith(("paraformer-", "qwen-audio-"))
+        else QwenRealtimeTranscriber
+    )
+    return transcriber_class(asr_config, on_partial, connect_timeout)
+
+
 class Recorder:
     """Thread-safe mono microphone recorder."""
 
@@ -468,7 +966,15 @@ class Recorder:
         self.frames = []
         self.stream = None
         self.recording = False
+        self.audio_listener: Callable[[object, int], None] | None = None
         self._lock = threading.RLock()
+
+    def set_audio_listener(
+        self,
+        listener: Callable[[object, int], None] | None,
+    ) -> None:
+        with self._lock:
+            self.audio_listener = listener
 
     def start(self) -> None:
         import sounddevice as sd
@@ -490,9 +996,17 @@ class Recorder:
     def _callback(self, indata, _frames, _time_info, status) -> None:
         if status:
             print(f"[录音] {status}", flush=True)
+        captured = None
+        listener = None
+        sample_rate = self.samplerate
         with self._lock:
             if self.recording:
-                self.frames.append(indata.copy())
+                captured = indata.copy()
+                self.frames.append(captured)
+                listener = self.audio_listener
+                sample_rate = self.samplerate
+        if captured is not None and listener is not None:
+            listener(captured, sample_rate)
 
     def stop(self, wav_path: Path | None = None) -> float:
         with self._lock:
@@ -804,6 +1318,12 @@ class SpeechPipeline:
                 self.llm_config.get("temperature", 0.2)
             ),
         }
+        provider = str(self.llm_config.get("provider", "") or "").lower()
+        if "qwen 百炼" in provider:
+            # Qwen Plus can otherwise enter its slower reasoning path. Voice
+            # cleanup is a direct transformation task, so explicitly disable
+            # thinking to cut several seconds without changing the output.
+            request["extra_body"] = {"enable_thinking": False}
         if bool(self.llm_config.get("stream", True)):
             pieces = ""
             try:
