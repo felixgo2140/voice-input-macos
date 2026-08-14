@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.1 — 2026-08-14
+
+- Batch microphone frames into 100 ms chunks so realtime ASR no longer falls
+  behind and overflows its send queue.
+- Preserve the last unfinished phrase when Paraformer completes a task and use
+  a 600 ms silence boundary to avoid chopping normal speech pauses into pieces.
+- Keep the result panel non-activating, write directly through Accessibility
+  when available, and otherwise post Command-V to the captured target process.
+- Detect event-posting permission without prompting and stop reporting a false
+  successful paste when macOS rejects the keyboard event.
+
 ## 1.4.0 — 2026-08-12
 
 - Streams microphone frames to low-latency DashScope ASR while recording,

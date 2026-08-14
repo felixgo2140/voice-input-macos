@@ -21,6 +21,7 @@ from macos_context import (
     capture_input_context,
     focus_matches,
     get_caret_frame,
+    insert_text_at_context,
     restore_input_focus,
 )
 from voice_input_core import (
@@ -35,6 +36,7 @@ from voice_input_core import (
     humanize_hotkey,
     panel_origin_for_caret,
     paste_text,
+    post_event_access_is_allowed,
     resolve_output_language,
 )
 from settings_window import SettingsController
@@ -195,8 +197,8 @@ def paste_result_to_context(
     text: str,
     restore_clipboard: bool = True,
     focus_timeout: float = 0.8,
-) -> bool:
-    """Restore the original input and issue an actual Command-V paste."""
+) -> str | None:
+    """Restore the original input and insert directly or post Command-V."""
     if not text:
         return False
     restored = restore_input_focus(context)
@@ -219,8 +221,16 @@ def paste_result_to_context(
     # App activation is asynchronous. AXFocused has already been requested,
     # so paste even when a web view cannot report element identity reliably.
     time.sleep(0.06)
-    paste_text(text, restore_clipboard)
-    return True
+    method = insert_text_at_context(context, text)
+    if method:
+        return method
+    if paste_text(
+        text,
+        restore_clipboard,
+        target_pid=context.pid if context is not None else None,
+    ):
+        return "command-v"
+    return None
 
 
 def prefer_external_input_context(
@@ -327,21 +337,21 @@ def panel_button_class():
 
 
 def panel_window_class():
-    """Floating window that is always eligible to become key and main."""
+    """Non-activating panel whose buttons preserve the editor's focus."""
     global _PANEL_WINDOW_CLASS
     if _PANEL_WINDOW_CLASS is not None:
         return _PANEL_WINDOW_CLASS
 
-    from AppKit import NSWindow
+    from AppKit import NSPanel
 
-    class VoiceInputKeyWindow(NSWindow):
+    class VoiceInputFloatingPanel(NSPanel):
         def canBecomeKeyWindow(self):
             return True
 
         def canBecomeMainWindow(self):
-            return True
+            return False
 
-    _PANEL_WINDOW_CLASS = VoiceInputKeyWindow
+    _PANEL_WINDOW_CLASS = VoiceInputFloatingPanel
     return _PANEL_WINDOW_CLASS
 
 
@@ -367,6 +377,7 @@ class ResultPanel:
             NSFloatingWindowLevel,
             NSFont,
             NSMakeRect,
+            NSNonactivatingPanelMask,
             NSScrollView,
             NSSegmentSwitchTrackingSelectOne,
             NSSegmentedControl,
@@ -379,7 +390,11 @@ class ResultPanel:
         width = max(340.0, float(ui_config.get("panel_width", 380)))
         height = max(170.0, float(ui_config.get("panel_height", 180)))
         self.caret_gap = max(8.0, float(ui_config.get("caret_gap", 52)))
-        style = NSTitledWindowMask | NSClosableWindowMask
+        style = (
+            NSTitledWindowMask
+            | NSClosableWindowMask
+            | NSNonactivatingPanelMask
+        )
         window_class = panel_window_class()
         self.panel = window_class.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 400, width, height),
@@ -391,6 +406,8 @@ class ResultPanel:
         self.panel.setLevel_(NSFloatingWindowLevel)
         self.panel.setHidesOnDeactivate_(False)
         self.panel.setReleasedWhenClosed_(False)
+        self.panel.setFloatingPanel_(True)
+        self.panel.setBecomesKeyOnlyIfNeeded_(True)
         content = self.panel.contentView()
 
         def make_label(x, y, w, h, text, bold=False, color=None):
@@ -680,6 +697,10 @@ class RecoveringRecorder(Recorder):
                     samplerate=rate,
                     channels=1,
                     dtype="float32",
+                    blocksize=max(
+                        1,
+                        int(rate * self.audio_chunk_ms / 1_000),
+                    ),
                     callback=self._callback,
                 )
                 stream.start()
@@ -723,7 +744,12 @@ def make_app():
         def __init__(self, config: dict):
             super().__init__("🎙", quit_button=None)
             self.config = config
-            self.recorder = RecoveringRecorder()
+            recording_config = config.get("recording", {})
+            self.recorder = RecoveringRecorder(
+                audio_chunk_ms=int(
+                    recording_config.get("audio_chunk_ms", 100)
+                )
+            )
             self.phase = Phase.IDLE
             self.phase_lock = threading.RLock()
             self.session: VoiceSession | None = None
@@ -759,6 +785,11 @@ def make_app():
                 "停止录音并处理",
                 callback=self.stop_recording_from_menu,
             )
+            self.auto_write_access_item = rumps.MenuItem(
+                "自动写入：检测中…",
+                callback=self.enable_auto_write,
+            )
+            self.last_permission_check_at = 0.0
             self.lang_items = {
                 "auto": rumps.MenuItem(
                     "自动检测页面语言",
@@ -778,6 +809,7 @@ def make_app():
                 None,
                 self.start_recording_item,
                 self.stop_recording_item,
+                self.auto_write_access_item,
                 None,
                 rumps.MenuItem("显示面板", callback=self.show_panel),
                 rumps.MenuItem("复制上次结果", callback=self.copy_latest_result),
@@ -797,6 +829,7 @@ def make_app():
                 rumps.MenuItem("退出", callback=self.quit_app),
             ]
             self._sync_language_controls()
+            self._sync_auto_write_access()
             self.timer = rumps.Timer(self._timer_tick, 0.25)
             self.timer.start()
 
@@ -988,23 +1021,36 @@ def make_app():
             language: str,
             trigger: str,
         ) -> bool:
-            pasted = paste_result_to_context(
+            method = paste_result_to_context(
                 context,
                 text,
                 bool(self.config.get("restore_clipboard", True)),
             )
-            if pasted:
+            if method:
                 self._set_ui(
                     status=f"已粘贴到原输入框 · {language}",
                     icon="✅",
                 )
-                print(f"[写回] {trigger}：已通过 Cmd+V 粘贴", flush=True)
+                print(f"[写回] {trigger}：已通过 {method} 写入", flush=True)
                 return True
-            self._set_ui(
-                status="结果已复制；聚焦输入框后可再点完成",
-                icon="⚠️",
-            )
-            print(f"[写回] {trigger}：原输入框不可用，结果已复制", flush=True)
+            if post_event_access_is_allowed() is False:
+                self._set_ui(
+                    status="结果已复制 · 菜单栏点“启用自动写入”",
+                    icon="⚠️",
+                )
+                print(
+                    f"[写回] {trigger}：自动写入未授权，结果已复制",
+                    flush=True,
+                )
+            else:
+                self._set_ui(
+                    status="结果已复制；原输入框当前不可用",
+                    icon="⚠️",
+                )
+                print(
+                    f"[写回] {trigger}：原输入框不可用，结果已复制",
+                    flush=True,
+                )
             return False
 
         def _request_finish(self, trigger: str) -> bool:
@@ -1465,6 +1511,10 @@ def make_app():
                 self.session = None
 
         def _timer_tick(self, _sender) -> None:
+            now = time.monotonic()
+            if now - self.last_permission_check_at >= 2.0:
+                self.last_permission_check_at = now
+                self._sync_auto_write_access()
             with self.phase_lock:
                 phase = self.phase
                 session = self.session
@@ -1538,6 +1588,28 @@ def make_app():
 
         def open_settings(self, _sender=None) -> None:
             self.settings_controller.show()
+
+        def _sync_auto_write_access(self) -> None:
+            allowed = post_event_access_is_allowed()
+            if allowed is True:
+                title = "自动写入：已就绪"
+            elif allowed is False:
+                title = "启用自动写入…"
+            else:
+                title = "自动写入：待检测"
+            self.auto_write_access_item.title = title
+
+        def enable_auto_write(self, _sender=None) -> None:
+            if post_event_access_is_allowed() is True:
+                self._set_ui(status="自动写入已就绪", icon="✅")
+                return
+            # This is a user-initiated, one-time macOS permission flow. It
+            # never asks for an API key, keychain password, or login password.
+            self.settings_controller.open_accessibility_settings()
+            self._set_ui(
+                status="请在系统设置中开启 Voice Input；无需填写密码",
+                icon="⚠️",
+            )
 
         def schedule_settings(self) -> None:
             def show_once(timer):
@@ -2066,7 +2138,6 @@ def main() -> int:
     if (
         missing
         or not bool(config.get("onboarding", {}).get("completed", False))
-        or not accessibility_is_trusted()
     ):
         app.schedule_settings()
     hotkey = str(runtime_config.get("hotkey", "<alt_r>"))
@@ -2086,6 +2157,15 @@ def main() -> int:
         f"[启动] 辅助功能权限 {'已就绪' if accessibility_is_trusted() else '未授权'}",
         flush=True,
     )
+    post_event_access = post_event_access_is_allowed()
+    post_event_status = (
+        "已就绪"
+        if post_event_access is True
+        else "未授权"
+        if post_event_access is False
+        else "无法检测"
+    )
+    print(f"[启动] 自动写入权限 {post_event_status}", flush=True)
     print(
         f"[启动] HTTPS 证书 {'已就绪' if SSL_CERT_PATH else '未找到'}",
         flush=True,

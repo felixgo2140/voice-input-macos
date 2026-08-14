@@ -35,8 +35,8 @@ OPTIONS = {
     "plist": {
         "CFBundleDisplayName": "Voice Input",
         "CFBundleIdentifier": "com.felix.voiceinput",
-        "CFBundleShortVersionString": "1.4.0",
-        "CFBundleVersion": "1400",
+        "CFBundleShortVersionString": "1.4.1",
+        "CFBundleVersion": "1401",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "LSArchitecturePriority": ["arm64"],
@@ -50,7 +50,7 @@ OPTIONS = {
 
 setup(
     name="Voice Input",
-    version="1.4.0",
+    version="1.4.1",
     app=APP,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],

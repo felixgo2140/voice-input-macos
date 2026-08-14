@@ -5,6 +5,7 @@
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "realtime_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
     "realtime_model": "paraformer-realtime-v2",
+    "sentence_silence_ms": 600,
     "api_key": "",
     "api_key_env": "VOICE_INPUT_ASR_API_KEY",
     "keychain_account": "qwen-bailian-api-key",
@@ -40,7 +41,8 @@
     "max_consecutive_failures": 2
   },
   "recording": {
-    "max_seconds": 600
+    "max_seconds": 600,
+    "audio_chunk_ms": 100
   },
   "network": {
     "timeout_seconds": 45,

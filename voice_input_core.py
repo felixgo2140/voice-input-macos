@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "realtime_url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
         "realtime_model": "paraformer-realtime-v2",
+        "sentence_silence_ms": 600,
         "api_key": "",
         "api_key_env": "VOICE_INPUT_ASR_API_KEY",
         "keychain_account": "qwen-bailian-api-key",
@@ -58,7 +59,7 @@ DEFAULT_CONFIG = {
         "minimum_seconds": 0.8,
         "max_consecutive_failures": 2,
     },
-    "recording": {"max_seconds": 600},
+    "recording": {"max_seconds": 600, "audio_chunk_ms": 100},
     "network": {"timeout_seconds": 45, "max_retries": 1},
     "restore_clipboard": True,
     "auto_paste": True,
@@ -814,18 +815,6 @@ class DashScopeRealtimeTranscriber(QwenRealtimeTranscriber):
         self.completed_parts: list[str] = []
         self.current_partial = ""
 
-    def finish(self, timeout: float = 3.0) -> str:
-        self.accepting_audio = False
-        self._enqueue_end()
-        if self.final_text and not self.current_partial:
-            # A short pause has already produced a sentence-end result while
-            # the user was reaching for Option. Only flush the sender queue;
-            # there is no reason to wait for the task-finished round trip.
-            if self.sender_finished.wait(min(0.8, max(0.2, timeout))):
-                self.final_received.wait(0.1)
-                return self.final_text.strip()
-        return super().finish(timeout)
-
     def _headers(self) -> list[str]:
         return [f"Authorization: Bearer {self.api_key}"]
 
@@ -846,7 +835,21 @@ class DashScopeRealtimeTranscriber(QwenRealtimeTranscriber):
                         "format": "pcm",
                         "sample_rate": 16_000,
                         "semantic_punctuation_enabled": False,
-                        "max_sentence_silence": 200,
+                        # 200 ms splits ordinary thinking pauses into many
+                        # short sentences. Partial results still arrive while
+                        # the user speaks, so a more natural VAD boundary does
+                        # not add latency when finish-task is sent explicitly.
+                        "max_sentence_silence": max(
+                            200,
+                            min(
+                                2_000,
+                                int(
+                                    self.asr_config.get(
+                                        "sentence_silence_ms", 600
+                                    )
+                                ),
+                            ),
+                        ),
                     },
                     "input": {},
                 },
@@ -886,7 +889,11 @@ class DashScopeRealtimeTranscriber(QwenRealtimeTranscriber):
                     )
             return
         if event_type == "task-finished":
-            if not self.final_text:
+            # A previous sentence_end may have populated final_text while the
+            # final, still-partial sentence is present only in latest_text.
+            # Always prefer the rolling transcript at task completion or the
+            # last phrase of a multi-sentence dictation is silently dropped.
+            if is_meaningful_transcript(self.latest_text):
                 self.final_text = self.latest_text
             self.final_received.set()
             self.finished.set()
@@ -961,8 +968,13 @@ def create_realtime_transcriber(
 class Recorder:
     """Thread-safe mono microphone recorder."""
 
-    def __init__(self, samplerate: int = 16_000):
+    def __init__(
+        self,
+        samplerate: int = 16_000,
+        audio_chunk_ms: int = 100,
+    ):
         self.samplerate = samplerate
+        self.audio_chunk_ms = max(20, min(500, int(audio_chunk_ms)))
         self.frames = []
         self.stream = None
         self.recording = False
@@ -987,6 +999,10 @@ class Recorder:
                 samplerate=self.samplerate,
                 channels=1,
                 dtype="float32",
+                blocksize=max(
+                    1,
+                    int(self.samplerate * self.audio_chunk_ms / 1_000),
+                ),
                 callback=self._callback,
             )
             stream.start()
@@ -1365,12 +1381,27 @@ def copy_text(text: str) -> None:
     pyperclip.copy(text)
 
 
-def paste_text(text: str, restore_clipboard: bool = True) -> None:
-    """Paste text and restore the old clipboard if it remains unchanged."""
+def post_event_access_is_allowed() -> bool | None:
+    """Return macOS keyboard-event posting access without showing a prompt."""
+    try:
+        from Quartz import CGPreflightPostEventAccess
+
+        return bool(CGPreflightPostEventAccess())
+    except Exception:
+        return None
+
+
+def paste_text(
+    text: str,
+    restore_clipboard: bool = True,
+    target_pid: int | None = None,
+) -> bool:
+    """Paste text into one process and keep it copied if posting is denied."""
     import pyperclip
     from Quartz import (
         CGEventCreateKeyboardEvent,
         CGEventPost,
+        CGEventPostToPid,
         CGEventSetFlags,
         kCGEventFlagMaskCommand,
         kCGHIDEventTap,
@@ -1379,16 +1410,23 @@ def paste_text(text: str, restore_clipboard: bool = True) -> None:
     previous = pyperclip.paste()
     pyperclip.copy(text)
     time.sleep(0.04)
+    if post_event_access_is_allowed() is False:
+        return False
     key_down = CGEventCreateKeyboardEvent(None, 9, True)
     key_up = CGEventCreateKeyboardEvent(None, 9, False)
     CGEventSetFlags(key_down, kCGEventFlagMaskCommand)
     CGEventSetFlags(key_up, kCGEventFlagMaskCommand)
-    CGEventPost(kCGHIDEventTap, key_down)
-    CGEventPost(kCGHIDEventTap, key_up)
+    if target_pid is not None:
+        CGEventPostToPid(int(target_pid), key_down)
+        CGEventPostToPid(int(target_pid), key_up)
+    else:
+        CGEventPost(kCGHIDEventTap, key_down)
+        CGEventPost(kCGHIDEventTap, key_up)
     if restore_clipboard:
-        time.sleep(0.18)
+        time.sleep(0.28)
         if pyperclip.paste() == text:
             pyperclip.copy(previous)
+    return True
 
 
 def humanize_hotkey(hotkey: str) -> str:
