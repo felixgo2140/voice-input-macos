@@ -56,6 +56,8 @@ class ConfigTests(unittest.TestCase):
             config["asr"]["keychain_account"], "qwen-bailian-api-key"
         )
         self.assertEqual(config["recording"]["max_seconds"], 600)
+        self.assertEqual(config["recording"]["audio_chunk_ms"], 100)
+        self.assertEqual(config["asr"]["sentence_silence_ms"], 600)
         self.assertTrue(self.path.exists())
 
     def test_config_file_is_private(self):
@@ -413,6 +415,28 @@ class QwenRealtimeTests(unittest.TestCase):
         result("第二句", False)
         self.assertEqual(partials[-1], "第一句。第二句")
         self.assertEqual(transcriber.final_text, "第一句。")
+
+    def test_paraformer_task_finished_keeps_last_partial_sentence(self):
+        import threading
+
+        from voice_input_core import DashScopeRealtimeTranscriber
+
+        transcriber = DashScopeRealtimeTranscriber.__new__(
+            DashScopeRealtimeTranscriber
+        )
+        transcriber.final_text = "第一句。"
+        transcriber.latest_text = "第一句。第二句还没断句"
+        transcriber.final_received = threading.Event()
+        transcriber.finished = threading.Event()
+        transcriber._close_socket = lambda: None
+        transcriber._on_message(
+            None,
+            json.dumps({"header": {"event": "task-finished"}}),
+        )
+        self.assertEqual(
+            transcriber.final_text,
+            "第一句。第二句还没断句",
+        )
 
 
 class PolishStreamTests(unittest.TestCase):

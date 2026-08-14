@@ -152,17 +152,38 @@ class ContextTests(unittest.TestCase):
             prefer_external_input_context(captured, None, 99), captured
         )
 
-    @patch("voice_input.paste_text")
+    @patch("voice_input.paste_text", return_value=True)
+    @patch("voice_input.insert_text_at_context", return_value=None)
     @patch("voice_input.restore_input_focus", return_value=True)
-    def test_writeback_restores_focus_then_pastes(self, restore, paste):
+    def test_writeback_restores_focus_then_pastes(
+        self, restore, _insert, paste
+    ):
         context = InputContext(element=None, pid=12)
-        self.assertTrue(
+        self.assertEqual(
             paste_result_to_context(
                 context, "hello", restore_clipboard=False, focus_timeout=0
-            )
+            ),
+            "command-v",
         )
         restore.assert_called_once_with(context)
-        paste.assert_called_once_with("hello", False)
+        paste.assert_called_once_with("hello", False, target_pid=12)
+
+    @patch("voice_input.paste_text")
+    @patch(
+        "voice_input.insert_text_at_context",
+        return_value="accessibility",
+    )
+    @patch("voice_input.focus_matches", return_value=True)
+    @patch("voice_input.restore_input_focus", return_value=True)
+    def test_writeback_prefers_direct_accessibility_insertion(
+        self, _restore, _matches, _insert, paste
+    ):
+        context = InputContext(element=object(), pid=12)
+        self.assertEqual(
+            paste_result_to_context(context, "hello", focus_timeout=0),
+            "accessibility",
+        )
+        paste.assert_not_called()
 
     @patch("voice_input.copy_text")
     @patch("voice_input.activate_context_application", return_value=False)

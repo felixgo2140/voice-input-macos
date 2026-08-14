@@ -65,7 +65,7 @@ cd voice-input-macos
 
 ```bash
 ./build-app.sh
-./package-release.sh 1.4.0
+./package-release.sh 1.4.1
 ```
 
 如果拥有 Apple Developer ID：
